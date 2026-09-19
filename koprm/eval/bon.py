@@ -20,7 +20,11 @@ representatives, so weighted/majority voting works on equivalence classes rather
 than raw strings.
 
     python -m koprm.eval.bon --dataset ENSEONG/ko-ko-math-500-test-EXAONE-4.0-1.2B-bon \\
-        --use-existing-scores --agg last --limit 20 --out /tmp/bon.json
+        --use-existing-scores --limit 20 --out /tmp/bon.json
+
+--agg both (the default) runs both aggregations off the one rescoring pass and writes
+{"last": {...}, "min": {...}, "source": ..., "scorer": ...}; --agg last|min keeps the flat
+single-aggregation JSON.
 """
 from __future__ import annotations
 
@@ -245,6 +249,29 @@ def evaluate(rows: list[dict], step_scores: list[list[list[float]]], agg: str = 
 
 
 # ------------------------------------------------------------------------ CLI
+def combine(results: dict[str, dict], source: str, scorer: str) -> dict:
+    """Output JSON for one or several aggregations.
+
+    A single aggregation keeps today's flat shape (dev evals already on disk still load);
+    several are nested under their aggregation name, since rescoring is the expensive part
+    and both §7 aggregations come from the same pass.
+    """
+    out = dict(next(iter(results.values()))) if len(results) == 1 else dict(results)
+    out["source"] = source
+    out["scorer"] = scorer
+    return out
+
+
+def print_metrics(res: dict, source: str, scorer: str) -> None:
+    print(f"\n[bon] {source}  scorer={scorer}  agg={res['agg']}  problems={res['n_problems']}")
+    print(f"{'n':>4} {'NAIVE':>8} {'WEIGHTED':>9} {'MAJ':>8} {'pass@n':>8}")
+    for n in res["ns"]:
+        m = res["metrics"][str(n)]
+        print(f"{n:>4} {m['naive']:>8.3f} {m['weighted']:>9.3f} {m['maj']:>8.3f} "
+              f"{m['pass']:>8.3f}")
+    print(f"pass@1 (mean correctness) = {res['pass@1_mean_correct']:.3f}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     src = ap.add_mutually_exclusive_group(required=True)
@@ -255,7 +282,8 @@ def main() -> None:
     ap.add_argument("--scorer", default="existing",
                     help="checkpoint dir, or 'existing' to reuse the stored scores")
     ap.add_argument("--use-existing-scores", action="store_true")
-    ap.add_argument("--agg", default="last", choices=["last", "min"])
+    ap.add_argument("--agg", default="both", choices=["both", "last", "min"],
+                    help="'both' scores once and writes {last: ..., min: ...} (§7)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--device", default="cpu")
@@ -279,20 +307,15 @@ def main() -> None:
         scores = rescore(rows, scorer, batch_size=args.batch_size)
         scorer_name = args.scorer
 
-    res = evaluate(rows, scores, agg=args.agg, timeout=args.timeout)
-    res["source"] = args.dataset or args.jsonl
-    res["scorer"] = scorer_name
+    aggs = ["last", "min"] if args.agg == "both" else [args.agg]
+    results = {a: evaluate(rows, scores, agg=a, timeout=args.timeout) for a in aggs}
+    source = args.dataset or args.jsonl
+    out = combine(results, source, scorer_name)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(args.out).write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(f"\n[bon] {res['source']}  scorer={scorer_name}  agg={args.agg}  "
-          f"problems={res['n_problems']}")
-    print(f"{'n':>4} {'NAIVE':>8} {'WEIGHTED':>9} {'MAJ':>8} {'pass@n':>8}")
-    for n in res["ns"]:
-        m = res["metrics"][str(n)]
-        print(f"{n:>4} {m['naive']:>8.3f} {m['weighted']:>9.3f} {m['maj']:>8.3f} "
-              f"{m['pass']:>8.3f}")
-    print(f"pass@1 (mean correctness) = {res['pass@1_mean_correct']:.3f}")
+    for res in results.values():
+        print_metrics(res, source, scorer_name)
     print(f"[bon] wrote {args.out}")
 
 

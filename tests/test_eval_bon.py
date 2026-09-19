@@ -4,6 +4,7 @@ from koprm.eval.bon import (
     AnswerGroups,
     aggregate,
     bootstrap_ci,
+    combine,
     evaluate,
     n_grid,
     split_steps,
@@ -86,6 +87,27 @@ def test_evaluate_min_aggregation_changes_the_pick():
     scores = [[[0.1, 0.9], [0.6, 0.6]]]
     assert evaluate(rows, scores, agg="last", verbose=False)["metrics"]["2"]["naive"] == 1.0
     assert evaluate(rows, scores, agg="min", verbose=False)["metrics"]["2"]["naive"] == 0.0
+
+
+def test_combine_both_aggregations_and_single():
+    """--agg both nests the two results; --agg last|min keeps the old flat shape."""
+    rows = [{"problem_id": "A", "problem_ko": "p", "answer": "4",
+             "completions": [_completion("4"), _completion("5")]}]
+    scores = [[[0.1, 0.9], [0.6, 0.6]]]
+    results = {a: evaluate(rows, scores, agg=a, verbose=False) for a in ("last", "min")}
+
+    both = combine(results, "src.jsonl", "ckpt/x")
+    assert set(both) == {"last", "min", "source", "scorer"}
+    assert both["source"] == "src.jsonl" and both["scorer"] == "ckpt/x"
+    assert both["last"]["agg"] == "last" and both["min"]["agg"] == "min"
+    assert both["last"]["metrics"]["2"]["naive"] == 1.0
+    assert both["min"]["metrics"]["2"]["naive"] == 0.0
+    assert both["last"]["problem_ids"] == ["A"]
+
+    flat = combine({"last": results["last"]}, "src.jsonl", "ckpt/x")
+    assert flat["agg"] == "last" and flat["metrics"]["2"]["naive"] == 1.0
+    assert flat["source"] == "src.jsonl" and flat["scorer"] == "ckpt/x"
+    assert "last" not in flat  # unchanged single-aggregation layout
 
 
 def test_bootstrap_ci():
