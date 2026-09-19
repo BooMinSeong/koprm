@@ -26,7 +26,7 @@ class RefDist:
     drops: np.ndarray  # sorted ascending
 
     @classmethod
-    def fit(cls, correct_solutions_z: list[np.ndarray]) -> "RefDist":
+    def fit(cls, correct_solutions_z: list[np.ndarray]) -> RefDist:
         ceils = np.array([ceiling(z) for z in correct_solutions_z])
         b_min = float(np.quantile(ceils, BMIN_Q))
         drops = []
@@ -45,7 +45,7 @@ class RefDist:
         return {"b_min": self.b_min, "drops": self.drops.tolist()}
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RefDist":
+    def from_dict(cls, d: dict) -> RefDist:
         return cls(b_min=d["b_min"], drops=np.asarray(d["drops"], dtype=np.float64))
 
 

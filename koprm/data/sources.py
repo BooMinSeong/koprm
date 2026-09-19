@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 from koprm.paths import MATH_LOCAL
 
@@ -41,7 +40,8 @@ def load_math_train() -> list[dict]:
     train_dir = MATH_LOCAL / "train"
     if train_dir.exists():
         for fp in sorted(train_dir.glob("*/*.json")):
-            d = json.load(open(fp, encoding="utf-8"))
+            with open(fp, encoding="utf-8") as fh:
+                d = json.load(fh)
             ans = last_boxed(d["solution"])
             if ans is None:
                 continue

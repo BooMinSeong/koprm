@@ -34,6 +34,43 @@ class Masked:
     spans: list[str] = field(default_factory=list)
 
 
+# Content-based "$...$" judgment (§3). GSM8K prose ("$5 for apples and $8 for pears") looks
+# exactly like a formula span to a bracket matcher -- 18% of GSM8K problems -- so a "$...$"
+# candidate is accepted only when its content reads like math. When it does not, the opening
+# "$" is treated as an ordinary character and scanning continues right after it.
+_HANGUL_RE = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]")
+# \text{...} and friends hold natural language on purpose: "$\text{inches}$" is still a formula.
+_TEXT_CMD = re.compile(r"\\(?:text|textbf|textit|textrm|mathrm|mbox|operatorname)\s*\{[^{}]*\}")
+# A prose word is an alphabetic run of >= 2 letters (wrapping punctuation allowed). Single
+# letters ("$a b c$") and symbol-bearing tokens ("$x = 2 + 3$") are not prose.
+_PROSE_WORD = re.compile(r"""^[("']*[A-Za-z]{2,}[.,;:!?)"']*$""")
+MAX_PROSE_RUN = 2  # three prose words in a row -> not a formula
+
+
+def _max_prose_run(content: str) -> int:
+    run = best = 0
+    for tok in content.split():
+        if _PROSE_WORD.match(tok):
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+    return best
+
+
+def _is_formula(text: str, i: int, j: int) -> bool:
+    """Is the "$...$" candidate text[i:j+1] a formula rather than prose or currency?"""
+    content = text[i + 1 : j]
+    if "\n" in content:
+        return False
+    if text[i + 1 : i + 2].isdigit() and text[j + 1 : j + 2].isdigit():
+        return False  # "$5 ... $8": both dollars open a price, neither closes a formula
+    bare = _TEXT_CMD.sub(" ", content)
+    if _HANGUL_RE.search(bare):
+        return False
+    return _max_prose_run(bare) <= MAX_PROSE_RUN
+
+
 def _find_math_spans(text: str) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     i, n = 0, len(text)
@@ -47,8 +84,12 @@ def _find_math_spans(text: str) -> list[tuple[int, int]]:
             i = j + 2
         elif c == "$":
             j = text.find("$", i + 1)
-            if j < 0:
-                break
+            if j < 0:  # unmatched "$" (a lone "$5"): plain character, keep scanning
+                i += 1
+                continue
+            if not _is_formula(text, i, j):
+                i += 1  # currency or prose: the opening "$" is an ordinary character
+                continue
             spans.append((i, j + 1))
             i = j + 1
         elif text.startswith("\\[", i):

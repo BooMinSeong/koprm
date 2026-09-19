@@ -22,7 +22,7 @@ def _verify_one(gold: str, completion: str) -> tuple[bool, str | None]:
         g = parse("\\boxed{" + gold + "}")
         p = parse("\\boxed{" + pred + "}")
         return bool(verify(g, p)), pred
-    except Exception:
+    except Exception:  # noqa: BLE001 - math_verify raises anything
         return False, pred
 
 
@@ -56,7 +56,7 @@ def verify_many(
         for i, fut in enumerate(futs):
             try:
                 results[i] = fut.result()
-            except (FutTimeout, Exception):
+            except (FutTimeout, Exception):  # noqa: BLE001 - worker may raise anything
                 results[i] = (False, last_boxed(completions[i]))
     return results  # type: ignore[return-value]
 

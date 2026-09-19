@@ -111,3 +111,63 @@ def test_mask_numbers_off_keeps_all_digits():
     m = mask(step, numbers=False)
     assert m.spans == ["$x = 3$"]
     assert m.text == "## 단계 2: 3을 더한다\n⟦M1⟧"
+
+
+# --- content-based "$...$" judgment (§3) ------------------------------------------------
+
+
+def test_currency_pair_is_not_a_formula():
+    """"$5 ... $8": both dollars open a price; the numbers are still masked one by one."""
+    m = mask("She paid $5 for apples and $8 for pears.")
+    assert m.spans == ["5", "8"]
+    assert m.text == "She paid $⟦M1⟧ for apples and $⟦M2⟧ for pears."
+
+
+def test_single_currency_without_closing_dollar():
+    m = mask("It costs $5.")
+    assert m.spans == ["5"]
+    assert m.text == "It costs $⟦M1⟧."
+
+
+def test_unmatched_dollar_does_not_swallow_the_rest():
+    """A lone "$" is a plain character: what follows it is still scanned normally."""
+    m = mask("It costs $5, so \\boxed{5} is the answer.")
+    assert m.spans == ["5", "\\boxed{5}"]
+    assert m.text == "It costs $⟦M1⟧, so ⟦M2⟧ is the answer."
+
+
+def test_short_formula_still_a_formula():
+    m = mask("$x = 2 + 3$")
+    assert m.spans == ["$x = 2 + 3$"]
+    assert m.text == "⟦M1⟧"
+    assert restore(m.text, m.spans) == ("$x = 2 + 3$", "ok")
+
+
+def test_single_letters_are_not_prose():
+    m = mask("$a b c$")
+    assert m.spans == ["$a b c$"]
+
+
+def test_text_command_is_still_a_formula():
+    for step in ["$\\text{inches}$", "$\\text{인치}$", "$5 \\text{ inches per foot}$"]:
+        m = mask(step)
+        assert m.spans == [step], step
+        assert m.text == "⟦M1⟧", step
+
+
+def test_three_prose_words_are_not_a_formula():
+    m = mask("$x is the number of apples$ here")
+    assert all(not s.startswith("$") for s in m.spans)
+    assert "$" in m.text
+
+
+def test_newline_inside_candidate_is_not_a_formula():
+    m = mask("The price is $5\nand the tax is $1.")
+    assert all(not s.startswith("$") for s in m.spans)
+    assert m.spans == ["5", "1"]
+
+
+def test_hangul_inside_candidate_is_not_a_formula():
+    m = mask("$x는 5$")
+    assert m.spans == ["5"]
+    assert m.text == "$x는 ⟦M1⟧$"

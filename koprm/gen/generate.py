@@ -12,7 +12,6 @@ for Qwen-style PRMs.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from koprm.io import load_jsonl, write_jsonl

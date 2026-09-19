@@ -26,8 +26,8 @@ GENERATORS = {
 }
 TEACHER_MODEL = "Qwen/Qwen2.5-Math-PRM-72B"
 TEACHER_MODEL_SMALL = "Qwen/Qwen2.5-Math-PRM-7B"  # pilot / smoke tests only
-TRANSLATOR_PRIMARY = "google/translategemma-12b-it"
-TRANSLATOR_FALLBACK = "Qwen/Qwen2.5-7B-Instruct"
+# One translator, no fallback (Plan §3): gemma-3-12b-it with an instruction prompt.
+TRANSLATOR = "google/gemma-3-12b-it"
 STUDENT_BACKBONE = "LGAI-EXAONE/EXAONE-4.0-1.2B"
 STUDENT_BACKBONE_FALLBACK = "Qwen/Qwen2.5-1.5B-Instruct"
 

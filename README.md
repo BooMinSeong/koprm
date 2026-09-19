@@ -16,17 +16,17 @@ uv sync --extra dev          # vllm 0.15, transformers 4.57, math-verify 0.9
 | 단계 | 모듈 | 산출물 (`data/`) |
 |---|---|---|
 | 1 분할 | `koprm.data.splits` | `splits/{dev,train_pool,math500}.jsonl` |
-| 2 문제 번역 영→한 | `koprm.translate.translate` | `trans/problems_ko.jsonl` |
-| 3 생성 + y 채점 | `koprm.gen.generate`, `koprm.gen.outcome` | `gen/<gen>.scored.jsonl` |
+| 2 문제 번역 영→한 | `koprm.prep problems-in` → `koprm.translate.translate` | `trans/problems_ko.jsonl` |
+| 3 생성 + y 채점 | `koprm.prep problems-ko` → `koprm.gen.generate`, `koprm.gen.outcome` | `gen/<gen>.scored.jsonl` |
 | 4 감사 세트 | `koprm.data.prm800k` + 번역 왕복 + 교사 + 커널 | `labels/audit.json` |
 | 5 선택 | `koprm.select` | `gen/selected.jsonl` |
-| 6 B 라벨링 | 스텝 번역 한→영 → `koprm.teacher.score` → `koprm.label.kernel` | `labels/B.jsonl` |
+| 6 B 라벨링 | 스텝 번역 한→영 → `koprm.prep teacher-in` → `koprm.teacher.score` → `koprm.label.kernel` | `labels/B.jsonl` |
 | 7 A 구성 | `koprm.data.prm800k` + 번역 영→한 | `labels/A.jsonl` |
 | 8 학습 세트 | `koprm.trainsets` | `trainsets/{A,B,AB}_{3k,6k,12k}.jsonl` |
 | 9 학습 | `koprm.train.train` | `ckpt/` |
 | 10 dev 선택 / 11 MATH500 | `koprm.eval.bon` (저장된 64샘플 재채점) | `eval/` |
 
-모든 단계는 jsonl을 `id` 기준으로 재개할 수 있고, 생성·번역은 `--shard i --num-shards k`로 GPU별 프로세스를 나눠 돌린다.
+단계 사이의 입력 jsonl은 `koprm.prep`의 하위 명령(`problems-in`, `problems-ko`, `prm800k-problems-in`, `teacher-in`)으로 앞 단계 산출물에서 만든다. 모든 단계는 jsonl을 `id` 기준으로 재개할 수 있고, 생성·번역은 `--shard i --num-shards k`로 GPU별 프로세스를 나눠 돌린다.
 
 ## 참고 구현
 
