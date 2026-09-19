@@ -8,6 +8,16 @@ every placeholder appears exactly once and in order.
 One exception to number masking: the step number in a step header ("## 단계 2:", "### Step 2:")
 stays plain text. The translator rewrites such a header as a whole ("## 단계 2:" -> "## Step 2:")
 and keeps the digit, while a placeholder there is one more thing it can drop or reorder.
+
+`$` is ambiguous: in MATH it opens inline math, in GSM8K it is a dollar sign. Pairing two
+currency amounts swallows the prose between them -- "costs $100. Betty has only half ... give
+her $15" would protect that whole sentence verbatim, so it is never translated. Which one a
+`$` is, is decided from the content between it and the next unescaped `$` (`_looks_like_math`),
+not from which dataset the row came from: inline math never runs across a line break, never
+holds Korean outside a text command, never strings three plain English words together, and a
+pair with a digit on each side of it is two amounts. A rejected `$` is treated as a literal
+character and scanning continues right after it, so "$15" simply gets its number masked.
+`$$...$$`, `\[...\]`, `\(...\)` and `\boxed{...}` are unaffected.
 """
 from __future__ import annotations
 
@@ -27,6 +37,35 @@ _STEP_HEADER = re.compile(
 # One pass over the text: placeholders are skipped whole so their digits are never re-masked.
 _NUM_OR_PH = re.compile(f"(?P<ph>{PH_RE.pattern})|(?P<num>{_NUMBER})")
 
+# Hangul syllables + jamo. Inside a formula only a text command may legitimately hold Korean.
+_HANGUL = re.compile(r"[\uac00-\ud7a3\u1100-\u11ff\u3130-\u318f]")
+# Prose deliberately embedded in a formula: \text{인치}, \mathrm{if}, \operatorname{lcm}, ...
+_TEXT_CMD = re.compile(
+    r"\\(?:text|mathrm|operatorname|mbox|textrm)\s*\*?\s*\{(?:[^{}]|\{[^{}]*\})*\}"
+)
+_LATEX_CMD = re.compile(r"\\[a-zA-Z]+")
+# Three or more bare words in a row, each at least two letters, separated by single spaces.
+# LaTeX never looks like this: "x \in \mathbb{R}" and "n^2 + 1" have no such run.
+_WORD_RUN = re.compile(r"[A-Za-z]{2,}(?: [A-Za-z]{2,}){2,}")
+
+
+def _looks_like_math(inner: str, after: str) -> bool:
+    """Decide whether two `$` delimit a formula or are two dollar signs with prose between.
+
+    `inner` is the text between them, `after` the character right after the closing `$`.
+    All four must hold for a math span: no line break; no Korean outside a text command; no run
+    of three plain English words; and not a "$5 ... $8" pair, which shows up as a digit opening
+    the content and another digit directly after the closing `$`.
+    """
+    if "\n" in inner:
+        return False
+    body = _TEXT_CMD.sub(" ", inner)
+    if _HANGUL.search(body):
+        return False
+    if _WORD_RUN.search(_LATEX_CMD.sub(" ", body)):
+        return False
+    return not (inner[:1].isdigit() and after[:1].isdigit())
+
 
 @dataclass
 class Masked:
@@ -34,21 +73,34 @@ class Masked:
     spans: list[str] = field(default_factory=list)
 
 
+def _find_close_dollar(text: str, start: int) -> int:
+    """Index of the next `$` that is not escaped as `\\$`, or -1."""
+    j = text.find("$", start)
+    while j > 0 and text[j - 1] == "\\":
+        j = text.find("$", j + 1)
+    return j
+
+
 def _find_math_spans(text: str) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     i, n = 0, len(text)
     while i < n:
         c = text[i]
-        if text.startswith("$$", i):
+        if text.startswith("\\$", i):
+            i += 2  # escaped dollar sign: a literal '$', never a delimiter
+        elif text.startswith("$$", i):
             j = text.find("$$", i + 2)
             if j < 0:
                 break
             spans.append((i, j + 2))
             i = j + 2
         elif c == "$":
-            j = text.find("$", i + 1)
+            j = _find_close_dollar(text, i + 1)
             if j < 0:
                 break
+            if not _looks_like_math(text[i + 1 : j], text[j + 1 : j + 2]):
+                i += 1  # a dollar sign, not a delimiter; keep scanning after it
+                continue
             spans.append((i, j + 1))
             i = j + 1
         elif text.startswith("\\[", i):
