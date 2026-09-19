@@ -206,9 +206,14 @@ def a_pool(n_correct=10, n_wrong=10, big_problem_solutions=0):
     return rows, trans
 
 
+def a_problems(rows):
+    """problem_id -> the Korean problem text (arm A needs one per row, §4.5)."""
+    return {r["problem_id"]: {"problem_ko": "문제", "source": "prm800k"} for r in rows}
+
+
 def test_build_A_rows_schema_and_balance():
     rows, trans = a_pool(10, 4)
-    problems = {r["problem_id"]: {"problem_ko": "문제", "source": "prm800k"} for r in rows}
+    problems = a_problems(rows)
     out, stats = build_A_rows(rows, trans, problems, n_per_class=6)
     assert stats["n_correct"] == stats["n_wrong"] == 4      # 1:1, wrong is the short side
     assert len(out) == 8
@@ -232,7 +237,7 @@ def _per_problem(out):
 
 def test_build_A_rows_prefers_two_solutions_per_problem():
     rows, trans = a_pool(4, 8, big_problem_solutions=6)
-    out, stats = build_A_rows(rows, trans, {}, n_per_class=6)
+    out, stats = build_A_rows(rows, trans, a_problems(rows), n_per_class=6)
     assert _per_problem(out)["prm800k/prob/shared"] == 2
     assert stats["solutions_per_problem_max"] == 2
     assert stats["n_correct"] == stats["n_wrong"] == 6
@@ -240,7 +245,7 @@ def test_build_A_rows_prefers_two_solutions_per_problem():
 
 def test_build_A_rows_relaxes_the_cap_only_to_fill_the_quota():
     rows, trans = a_pool(4, 8, big_problem_solutions=6)
-    out, stats = build_A_rows(rows, trans, {}, n_per_class=8)
+    out, stats = build_A_rows(rows, trans, a_problems(rows), n_per_class=8)
     # 4 + 2 capped picks are not enough for 8 correct, so the cap gives way
     assert _per_problem(out)["prm800k/prob/shared"] == 4
     assert stats["n_correct"] == stats["n_wrong"] == 8
@@ -251,17 +256,31 @@ def test_build_A_rows_drops_bad_translations():
     trans["prm800k/0"]["mask_restore_ok"] = False
     trans["prm800k/1"]["steps_ko"] = ["단계"] * (T - 1)     # length mismatch
     del trans["prm800k/2"]
-    out, stats = build_A_rows(rows, trans, {}, n_per_class=8)
+    out, stats = build_A_rows(rows, trans, a_problems(rows), n_per_class=8)
     assert stats["dropped"] == {"mask_restore_fail": 1, "len_mismatch": 1, "no_translation": 1}
     assert stats["n_correct"] == 1 and len(out) == 2        # only one correct survives
     assert stats["n_usable"] == {"0": 4, "1": 1}
 
 
+def test_build_A_rows_drops_rows_without_a_korean_problem():
+    """A problem that was never translated cannot be trained on; it goes before balancing."""
+    rows, trans = a_pool(4, 4)
+    problems = a_problems(rows)
+    del problems[rows[0]["problem_id"]]        # this correct solution has no Korean problem
+    out, stats = build_A_rows(rows, trans, problems, n_per_class=8)
+    assert stats["dropped"] == {"no_problem_ko": 1}
+    assert rows[0]["id"] not in {r["id"] for r in out}
+    assert stats["n_usable"] == {"0": 4, "1": 3}
+    assert stats["n_correct"] == stats["n_wrong"] == 3      # 1:1 from what is left
+    assert stats["n_missing_problem_ko"] == 0
+    assert all(r["problem_ko"] for r in out)
+
+
 def test_build_A_rows_is_deterministic():
     rows, trans = a_pool(20, 20)
-    a, _ = build_A_rows(rows, trans, {}, n_per_class=5, seed=11)
-    b, _ = build_A_rows(rows, trans, {}, n_per_class=5, seed=11)
-    c, _ = build_A_rows(rows, trans, {}, n_per_class=5, seed=12)
+    a, _ = build_A_rows(rows, trans, a_problems(rows), n_per_class=5, seed=11)
+    b, _ = build_A_rows(rows, trans, a_problems(rows), n_per_class=5, seed=11)
+    c, _ = build_A_rows(rows, trans, a_problems(rows), n_per_class=5, seed=12)
     assert [r["id"] for r in a] == [r["id"] for r in b]
     assert [r["id"] for r in a] != [r["id"] for r in c]
 

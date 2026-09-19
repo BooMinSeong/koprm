@@ -148,12 +148,16 @@ def build_labels(
         if rd is None:
             drops["no_reference"] += 1
             continue
+        fields = _problem_fields(r, problems_by_id)
+        if not fields["problem_ko"]:  # nothing to train the Korean student on
+            drops["no_problem_ko"] += 1
+            continue
         y = int(r["outcome"])
         k = kernel(z, y, rd, hi=hi, lo=lo)
         out.append(
             {
                 "id": r["id"],
-                **_problem_fields(r, problems_by_id),
+                **fields,
                 "arm": arm,
                 "generator": g,
                 "solution_steps": list(r[steps_field]),
@@ -245,7 +249,11 @@ def build_A_rows(
         if not (len(steps_ko) == len(r["steps_en"]) == len(r["step_labels"])):
             drops["len_mismatch"] += 1
             continue
-        usable[int(r["outcome"])].append({**r, "_steps_ko": list(steps_ko)})
+        fields = _problem_fields(r, problems_by_id)
+        if not fields["problem_ko"]:  # drop before balancing so the 1:1 cut still fills up
+            drops["no_problem_ko"] += 1
+            continue
+        usable[int(r["outcome"])].append({**r, "_steps_ko": list(steps_ko), "_fields": fields})
 
     rng = random.Random(seed)
     queues = {}
@@ -283,7 +291,7 @@ def build_A_rows(
         out.append(
             {
                 "id": r["id"],
-                **_problem_fields(r, problems_by_id),
+                **r["_fields"],
                 "arm": "A",
                 "generator": "prm800k",
                 "solution_steps": r["_steps_ko"],
