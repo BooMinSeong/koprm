@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # pipeline outputs (large; regenerate from scripts)
-/data/
+/data/*
 !/data/reports/
 logs/
 .pytest_cache/
