@@ -1,6 +1,6 @@
 """§3 Translation bridge: one instruct translator over masked text, resumable jsonl.
 
-The translator is gemma-3-12b-it with an instruction prompt (Plan §3, HANDOFF). There is
+The translator is gemma-4-12B-it with an instruction prompt (Plan §3, HANDOFF). There is
 no fallback model, no retry pass and no similarity check: a unit either restores cleanly or
 it is reported as a failure.
 
@@ -8,8 +8,11 @@ Per unit (a problem string, or one step of a solution):
     mask()              -> "⟦M1⟧" placeholders for math spans and standalone numbers
     formula-only?       -> keep the original verbatim, status "passthrough" (the translator
                            invents content when there is nothing to translate)
-    chat prompt         -> temperature 0, fixed seed, one sample
+    chat prompt         -> per-unit system prompt (placeholder / step-header rules only when
+                           that unit has them), temperature 0, fixed seed, one sample
     unwrap              -> strip surrounding whitespace, one layer of quotes or code fence
+    cut                 -> a "\n## ..." continuation the model invented for a source without a
+                           header, and a trailing run of placeholders it invented
     script check        -> target-language script only outside placeholders, else "script"
     restore()           -> "ok"/"order" pass, "missing"/"duplicate"/"extra" fail
 
@@ -22,7 +25,7 @@ Failed rows are written too, so a re-run resumes past them and the failure rate 
 
     python -m koprm.translate.translate --in data/trans/problems_in.jsonl \
         --out data/trans/problems_ko.jsonl --field problem_en --out-field problem_ko \
-        --src en --tgt ko --primary-model google/gemma-3-12b-it --primary-backend instruct
+        --src en --tgt ko --primary-model google/gemma-4-12B-it --primary-backend instruct
 """
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ from pathlib import Path
 
 from koprm.io import done_ids, load_jsonl, write_jsonl
 from koprm.paths import TRANSLATOR
-from koprm.translate.mask import PH_RE, mask, restore
+from koprm.translate.mask import PH_RE, has_step_header, mask, restore
 
 LANG = {"en": "English", "ko": "Korean"}
 CARRY_FIELDS = ("problem_id", "generator", "outcome")
@@ -43,27 +46,53 @@ OK_STATUSES = ("ok", "order", "passthrough")
 _HANGUL_RE = re.compile(r"[가-힣ᄀ-ᇿ㄰-㆏]")
 _HAN_RE = re.compile(r"[一-鿿]")
 _FENCE_RE = re.compile(r"^```[A-Za-z0-9_+-]*\n(?P<body>.*)\n```$", re.DOTALL)
+# A markdown header in the source, and one the model started on its own after the translation.
+_HEADER_LINE_RE = re.compile(r"^#{1,6}\s", re.MULTILINE)
+_CONTINUATION_RE = re.compile(r"\n#{1,6}\s")
+# A placeholder at the very end, with only whitespace or punctuation after it.
+_TAIL_PH_RE = re.compile(rf"\s*{PH_RE.pattern}[\s,;:.·、。]*$")
 _QUOTES = (('"', '"'), ("'", "'"), ("“", "”"), ("「", "」"))
 
-SYSTEM_PROMPT = (
-    "You are a professional translator. Translate the user's message from {src} to {tgt}.\n"
-    "Rules:\n"
-    "1. Every placeholder of the form ⟦M1⟧, ⟦M2⟧, ... is a frozen chunk of "
-    "mathematics. Copy each one verbatim, exactly once, with the same number, and put it at "
-    "the place in the {tgt} sentence where its content belongs. Never translate, split, "
-    "merge, drop, add or renumber a placeholder.\n"
-    "2. Keep the markdown structure of the message, including line breaks. A step header "
-    'stays a step header: "## 단계 3:" becomes "## Step 3:" and "## Step 3:" becomes '
-    '"## 단계 3:", keeping the same number.\n'
-    "3. Write natural {tgt}. Use no {src} words and no other script in your answer, except "
-    "inside the placeholders.\n"
-    "4. Output only the translation. No preamble, no quotes around it, no code fences, no "
+# The prompt is assembled per unit: a rule about placeholders or step headers in a unit that
+# has neither invites the model to invent them (the pilot's "extra"/"duplicate" failures were
+# hallucinated "## 단계 2: ⟦M2⟧ ..." continuations). Four variants only, so prefix caching still
+# pays off.
+_HEAD = "You are a professional translator. Translate the user's message from {src} to {tgt}."
+_RULE_PLACEHOLDERS = (
+    "Every placeholder of the form ⟦M1⟧, ⟦M2⟧, ... is a frozen chunk of mathematics. Copy "
+    "each one verbatim, exactly once, with the same number, and put it at the place in the "
+    "{tgt} sentence where its content belongs. Never translate, split, merge, drop, add or "
+    "renumber a placeholder."
+)
+_RULE_HEADER = (
+    "Keep the markdown structure of the message, including line breaks. A step header stays "
+    'a step header: "## 단계 3:" becomes "## Step 3:" and "## Step 3:" becomes "## 단계 3:", '
+    "keeping the same number."
+)
+_RULE_WHOLE = (
+    "Translate the whole message and nothing more. Do not continue it, add steps, add "
+    "placeholders, or add notes."
+)
+_RULE_SCRIPT = "Write natural {tgt}. Use no {src} words and no other script in your answer{exc}."
+_RULE_OUTPUT = (
+    "Output only the translation. No preamble, no quotes around it, no code fences, no "
     "notes, no explanation."
 )
 
 
-def system_prompt(src: str, tgt: str) -> str:
-    return SYSTEM_PROMPT.format(src=LANG[src], tgt=LANG[tgt])
+def system_prompt(src: str, tgt: str, placeholders: bool = True, header: bool = True) -> str:
+    """The instruction for one unit: only the rules that unit's masked text can need."""
+    rules = []
+    if placeholders:
+        rules.append(_RULE_PLACEHOLDERS)
+    if header:
+        rules.append(_RULE_HEADER)
+    rules.append(_RULE_WHOLE)
+    rules.append(_RULE_SCRIPT.format(exc=", except inside the placeholders" if placeholders else "",
+                                     src="{src}", tgt="{tgt}"))
+    rules.append(_RULE_OUTPUT)
+    body = "\n".join(f"{i}. {r}" for i, r in enumerate(rules, start=1))
+    return f"{_HEAD}\nRules:\n{body}".format(src=LANG[src], tgt=LANG[tgt])
 
 
 def needs_translation(masked_text: str) -> bool:
@@ -92,27 +121,45 @@ def script_ok(text: str, tgt: str) -> bool:
     return not (tgt == "en" and _HANGUL_RE.search(bare))
 
 
-def finish_unit(raw: str, spans: list[str], tgt: str) -> tuple[str | None, str, str]:
-    """Post-process one model output: unwrap -> script check -> restore.
+def cut_continuation(text: str) -> str:
+    """Cut a hallucinated "\\n## ..." continuation off a unit whose source had no header."""
+    m = _CONTINUATION_RE.search(text)
+    return text[: m.start()].rstrip() if m else text
 
-    Returns (restored_text, status, unwrapped_output); the unwrapped output is kept so a
-    failure can be diagnosed from the jsonl instead of being re-run.
+
+def strip_extra_tail(text: str, n_spans: int) -> str:
+    """Drop a trailing run of invented placeholders (numbers above the unit's span count)."""
+    out = text
+    while True:
+        m = _TAIL_PH_RE.search(out)
+        if m is None or int(m.group(1)) <= n_spans:
+            return out
+        out = out[: m.start()].rstrip()
+
+
+def finish_unit(
+    raw: str, spans: list[str], tgt: str, has_header: bool = False
+) -> tuple[str | None, str, str]:
+    """Post-process one model output: unwrap -> cut hallucinations -> script check -> restore.
+
+    Returns (restored_text, status, unwrapped_output). The unwrapped output is the text
+    *before* the cuts, so a failure (and what was cut) can be diagnosed from the jsonl.
     """
     text = unwrap(raw)
-    if not script_ok(text, tgt):
+    cut = text if has_header else cut_continuation(text)
+    cut = strip_extra_tail(cut, len(spans))
+    if not script_ok(cut, tgt):
         return None, "script", text
-    restored, status = restore(text, spans)
+    restored, status = restore(cut, spans)
     return restored, status, text
 
 
 class InstructTranslator:
-    """gemma-3-12b-it through vLLM: one greedy sample per masked unit."""
+    """gemma-4-12B-it through vLLM: one greedy sample per masked unit."""
 
     def __init__(
         self,
         model: str = TRANSLATOR,
-        src: str = "en",
-        tgt: str = "ko",
         max_tokens: int = 1024,
         max_model_len: int = 4096,
         gpu_memory_utilization: float = 0.85,
@@ -122,7 +169,6 @@ class InstructTranslator:
         from vllm import LLM, SamplingParams
 
         self.model = model
-        self.system = system_prompt(src, tgt)
         self.llm = LLM(
             model=model,
             gpu_memory_utilization=gpu_memory_utilization,
@@ -130,30 +176,31 @@ class InstructTranslator:
             enable_prefix_caching=True,
             seed=seed,
             tensor_parallel_size=tensor_parallel_size,
-            # gemma-3-12b-it is a Gemma3ForConditionalGeneration checkpoint; we only ever send
-            # text, so the vision tower must not reserve multimodal memory.
+            # gemma-4-12B-it is a Gemma4UnifiedForConditionalGeneration checkpoint (vLLM >= 0.29);
+            # we only ever send text, so the vision tower must not reserve multimodal memory.
             limit_mm_per_prompt={"image": 0},
         )
         self.tok = self.llm.get_tokenizer()
         self.sp = SamplingParams(n=1, temperature=0.0, top_p=1.0, max_tokens=max_tokens, seed=seed)
 
-    def build_prompts(self, texts: list[str]) -> list[str]:
-        # Gemma3's chat template accepts a system turn and folds it into the first user turn.
+    def build_prompts(self, texts: list[str], systems: list[str]) -> list[str]:
+        # The Gemma chat template accepts a system turn and folds it into the first user turn.
         convs = [
-            [{"role": "system", "content": self.system}, {"role": "user", "content": t}]
-            for t in texts
+            [{"role": "system", "content": s}, {"role": "user", "content": t}]
+            for t, s in zip(texts, systems)
         ]
         return self.tok.apply_chat_template(convs, tokenize=False, add_generation_prompt=True)
 
-    def translate(self, texts: list[str]) -> list[str]:
+    def translate(self, texts: list[str], systems: list[str]) -> list[str]:
+        """One greedy sample per unit, each with that unit's system prompt."""
         if not texts:
             return []
-        outs = self.llm.generate(self.build_prompts(texts), self.sp, use_tqdm=True)
+        outs = self.llm.generate(self.build_prompts(texts, systems), self.sp, use_tqdm=True)
         return [o.outputs[0].text for o in outs]
 
 
 def translate_units(
-    texts: list[str], translator, tgt: str
+    texts: list[str], translator, src: str, tgt: str
 ) -> tuple[list[str | None], list[str], list[str | None]]:
     """Mask, translate what needs it, restore.
 
@@ -162,12 +209,17 @@ def translate_units(
     """
     masked = [mask(t) for t in texts]
     todo = [i for i, m in enumerate(masked) if needs_translation(m.text)]
-    raws = translator.translate([masked[i].text for i in todo]) if todo else []
+    systems = [
+        system_prompt(src, tgt, bool(masked[i].spans), has_step_header(masked[i].text))
+        for i in todo
+    ]
+    raws = translator.translate([masked[i].text for i in todo], systems) if todo else []
     out: list[str | None] = list(texts)
     statuses = ["passthrough"] * len(texts)
     outputs: list[str | None] = [None] * len(texts)
     for i, raw in zip(todo, raws):
-        out[i], statuses[i], outputs[i] = finish_unit(raw, masked[i].spans, tgt)
+        has_header = _HEADER_LINE_RE.search(masked[i].text) is not None
+        out[i], statuses[i], outputs[i] = finish_unit(raw, masked[i].spans, tgt, has_header)
     return out, statuses, outputs
 
 
@@ -176,6 +228,7 @@ def translate_rows(
     translator,
     field: str,
     out_field: str,
+    src: str,
     tgt: str,
     id_key: str = "id",
     translator_name: str = TRANSLATOR,
@@ -195,7 +248,7 @@ def translate_rows(
             units.append(v)
             owners.append((ri, 0))
 
-    texts, statuses, outputs = translate_units(units, translator, tgt)
+    texts, statuses, outputs = translate_units(units, translator, src, tgt)
     per_row: list[list[tuple[str | None, str, str | None]]] = [[] for _ in rows]
     for (ri, _), t, st, raw in zip(owners, texts, statuses, outputs):
         per_row[ri].append((t, st, raw))
@@ -247,6 +300,7 @@ def run(
     out_path: Path,
     field: str,
     out_field: str,
+    src: str,
     tgt: str,
     id_key: str = "id",
     batch: int = 256,
@@ -259,7 +313,7 @@ def run(
     for b in range(0, len(todo), batch):
         chunk = todo[b : b + batch]
         out_rows, stats = translate_rows(
-            chunk, translator, field, out_field, tgt, id_key, translator_name
+            chunk, translator, field, out_field, src, tgt, id_key, translator_name
         )
         write_jsonl(out_path, out_rows, append=True)
         total.update(stats)
@@ -313,8 +367,6 @@ def main() -> None:
 
     translator = InstructTranslator(
         model=args.primary_model,
-        src=args.src,
-        tgt=args.tgt,
         max_tokens=args.max_tokens,
         max_model_len=args.max_model_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
@@ -327,6 +379,7 @@ def main() -> None:
         out,
         args.field,
         args.out_field,
+        args.src,
         args.tgt,
         id_key=args.id_key,
         batch=args.batch,

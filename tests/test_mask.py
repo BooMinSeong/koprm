@@ -171,3 +171,21 @@ def test_hangul_inside_candidate_is_not_a_formula():
     m = mask("$x는 5$")
     assert m.spans == ["5"]
     assert m.text == "$x는 ⟦M1⟧$"
+
+
+def test_asy_diagram_is_one_span():
+    """An [asy]...[/asy] block is one opaque placeholder; math outside it is masked normally."""
+    step = ("Find $x$ in the figure.\n"
+            "[asy]\ndraw((0,0)--(1,2));\nlabel(\"$5$\", (1,1));\n[/ASY]")
+    m = mask(step)
+    assert len(m.spans) == 2
+    assert m.spans[0] == "$x$"
+    assert m.spans[1].startswith("[asy]") and m.spans[1].endswith("[/ASY]")
+    assert m.text == "Find ⟦M1⟧ in the figure.\n⟦M2⟧"
+    assert restore(m.text, m.spans) == (step, "ok")
+
+
+def test_unclosed_asy_tag_is_ordinary_text():
+    m = mask("[asy] draw(3);")
+    assert m.spans == ["3"]
+    assert m.text == "[asy] draw(⟦M1⟧);"

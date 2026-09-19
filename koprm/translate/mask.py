@@ -1,9 +1,9 @@
 """§3.1 Formula masking for translation.
 
-Math spans ($...$, $$...$$, \\[...\\], \\(...\\), \\boxed{...}) and standalone numbers are
-replaced by placeholders before translation and restored after. The placeholder shape is
-configurable because MT models sometimes rewrite unusual symbols; `restore()` verifies that
-every placeholder appears exactly once and in order.
+Math spans ($...$, $$...$$, \\[...\\], \\(...\\), \\boxed{...}), Asymptote diagrams
+([asy]...[/asy]) and standalone numbers are replaced by placeholders before translation and
+restored after. The placeholder shape is configurable because MT models sometimes rewrite
+unusual symbols; `restore()` verifies that every placeholder appears exactly once and in order.
 
 One exception to number masking: the step number in a step header ("## 단계 2:", "### Step 2:")
 stays plain text. The translator rewrites such a header as a whole ("## 단계 2:" -> "## Step 2:")
@@ -24,6 +24,9 @@ _NUMBER = r"(?<![A-Za-z\\{}_^])[-+]?\d+(?:[.,]\d+)*(?:%|°)?(?![A-Za-z\d{}])"
 _STEP_HEADER = re.compile(
     r"^\s*#{1,6}\s*(?:단계|Step)\s*(?P<num>\d+)\s*:", re.MULTILINE | re.IGNORECASE
 )
+# An Asymptote diagram is one opaque chunk: nothing inside it is translated or masked further.
+_ASY_OPEN = re.compile(r"\[asy\]", re.IGNORECASE)
+_ASY_CLOSE = re.compile(r"\[/asy\]", re.IGNORECASE)
 # One pass over the text: placeholders are skipped whole so their digits are never re-masked.
 _NUM_OR_PH = re.compile(f"(?P<ph>{PH_RE.pattern})|(?P<num>{_NUMBER})")
 
@@ -76,6 +79,15 @@ def _find_math_spans(text: str) -> list[tuple[int, int]]:
     i, n = 0, len(text)
     while i < n:
         c = text[i]
+        asy = _ASY_OPEN.match(text, i)
+        if asy:
+            close = _ASY_CLOSE.search(text, asy.end())
+            if close is None:  # unclosed diagram: "[" is an ordinary character
+                i += 1
+                continue
+            spans.append((i, close.end()))
+            i = close.end()
+            continue
         if text.startswith("$$", i):
             j = text.find("$$", i + 2)
             if j < 0:
@@ -157,6 +169,11 @@ def mask(text: str, numbers: bool = True) -> Masked:
     masked = PH_RE.sub(lambda m: PH_FMT.format(remap[int(m.group(1))]), masked)
     pieces = [pieces[old - 1] for old in order]
     return Masked(masked, pieces)
+
+
+def has_step_header(text: str) -> bool:
+    """True when the text carries a "## \ub2e8\uacc4 N:" / "## Step N:" header (see `_STEP_HEADER`)."""
+    return _STEP_HEADER.search(text) is not None
 
 
 def restore(translated: str, spans: list[str]) -> tuple[str | None, str]:

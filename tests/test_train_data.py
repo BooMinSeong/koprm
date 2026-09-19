@@ -94,3 +94,20 @@ def test_build_dataset_stats_and_soft_targets():
     # padding of the shorter solution is masked out everywhere
     assert batch["attention_mask"][1].sum().item() == len(ds.examples[1].input_ids)
     assert torch.isnan(batch["soft_targets"][1, 1])
+
+
+def test_encode_example_accepts_a_batchencoding():
+    """transformers 5 returns a BatchEncoding (a UserDict, not a dict) from the template."""
+    from collections import UserDict
+
+    from koprm.train.model import encode_example
+
+    class MappingTok(FakeTok):
+        def apply_chat_template(self, conv, tokenize=True, add_generation_prompt=False):
+            ids = super().apply_chat_template(conv, tokenize, add_generation_prompt)
+            return UserDict({"input_ids": [ids], "attention_mask": [[1] * len(ids)]})
+
+    ids, pos = encode_example(MappingTok(), "문제", ["가나다", "라마"], SEP)
+    assert ids == encode_example(FakeTok(), "문제", ["가나다", "라마"], SEP)[0]
+    assert pos == [len(PREFIX) + 3, len(PREFIX) + 3 + 1 + 2]  # the two SEP positions
+    assert all(ids[p] == 7 for p in pos)

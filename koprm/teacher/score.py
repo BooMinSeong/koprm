@@ -1,5 +1,10 @@
 """§2.2 Teacher log-odds with vLLM pooling.
 
+vLLM 0.29: the offline pooling entry point is `LLM.encode(..., pooling_task="token_classify")`
+(`LLM.reward` is gone). The rest of the pooling path is `runner="pooling"`,
+`PoolerConfig(use_activation=False)`, the fp32 head via `hf_overrides`, and a [T, 2] tensor in
+`outputs.data`.
+
 Input is assembled directly: "<extra_0>".join(steps_en) + "<extra_0>" inside the Qwen chat
 template with the model-card system prompt. The pooler returns raw 2-class logits at each
 <extra_0> position (use_activation=False, head in float32); we store z_t = l1 - l0.
@@ -77,7 +82,15 @@ class Teacher:
                 keep.append(i)
                 inputs.append(t)
         pp = PoolingParams(use_activation=False, step_tag_id=self.step_tag_id)
-        outs = self.llm.reward(inputs, pooling_params=pp, use_tqdm=True) if inputs else []
+        # `pooling_params.task` is filled in from `pooling_task`, and PoolingParams keeps
+        # `step_tag_id` for a STEP pooler, so one row comes back per <extra_0>.
+        outs = (
+            self.llm.encode(
+                inputs, pooling_params=pp, pooling_task="token_classify", use_tqdm=True
+            )
+            if inputs
+            else []
+        )
         result: list[np.ndarray | None] = [None] * len(texts)
         for i, o in zip(keep, outs):
             data = o.outputs.data

@@ -5,7 +5,7 @@
 ## 환경
 
 ```bash
-uv sync --extra dev          # vllm 0.15, transformers 4.57, math-verify 0.9
+uv sync --extra dev          # vllm 0.29, transformers 5.17, torch 2.13, math-verify 0.9
 .venv/bin/python -m pytest tests -q
 ```
 

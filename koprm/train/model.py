@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 import torch
@@ -113,7 +114,9 @@ def encode_example(tokenizer, problem_ko: str, steps: list[str], sep_token: str,
     """Return (input_ids, sep_positions).  No truncation here (see train/data.py)."""
     conv = build_conversation(problem_ko, steps, sep_token, system_prompt)
     ids = tokenizer.apply_chat_template(conv, tokenize=True, add_generation_prompt=False)
-    if isinstance(ids, dict):  # some templates return a BatchEncoding
+    # transformers 5 returns a BatchEncoding (a UserDict, so *not* a dict) from
+    # apply_chat_template(tokenize=True); Mapping covers both it and a plain dict.
+    if isinstance(ids, Mapping):
         ids = ids["input_ids"]
     if len(ids) and isinstance(ids[0], list):
         ids = ids[0]

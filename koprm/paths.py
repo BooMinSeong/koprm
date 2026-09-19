@@ -4,6 +4,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# vLLM 0.29 JIT-compiles the flashinfer sampler, which needs ninja and nvcc on PATH; this box
+# has neither, so the build fails at startup. Every vLLM user imports this module first.
+os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("KOPRM_DATA", ROOT / "data"))
 SPLITS = DATA / "splits"
@@ -26,8 +30,8 @@ GENERATORS = {
 }
 TEACHER_MODEL = "Qwen/Qwen2.5-Math-PRM-72B"
 TEACHER_MODEL_SMALL = "Qwen/Qwen2.5-Math-PRM-7B"  # pilot / smoke tests only
-# One translator, no fallback (Plan §3): gemma-3-12b-it with an instruction prompt.
-TRANSLATOR = "google/gemma-3-12b-it"
+# One translator, no fallback (Plan §3): gemma-4-12B-it with an instruction prompt.
+TRANSLATOR = "google/gemma-4-12B-it"
 STUDENT_BACKBONE = "LGAI-EXAONE/EXAONE-4.0-1.2B"
 STUDENT_BACKBONE_FALLBACK = "Qwen/Qwen2.5-1.5B-Instruct"
 

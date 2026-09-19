@@ -119,7 +119,7 @@ def main() -> int:
     for b in backbones:
         try:
             results[b] = check(b, args.max_len)
-        except Exception:
+        except Exception:  # noqa: BLE001 - report every backbone, then exit non-zero
             traceback.print_exc()
             results[b] = False
     print("\n==== summary ====")
