@@ -1,0 +1,15 @@
+{
+  "n_rows": 961,
+  "n_wrong": 481,
+  "n_correct": 480,
+  "exact_frac": 0.24324324324324326,
+  "within1_frac": 0.44282744282744285,
+  "wrong_no_prediction_frac": 0.18087318087318088,
+  "correct_no_prediction_frac": 0.7541666666666667,
+  "ckpt": "data/ckpt/AB_12k/epoch3",
+  "rows": "data/labels/audit_rows.jsonl",
+  "threshold": 0.5,
+  "steps_field": "steps_ko",
+  "n_truncated": 0,
+  "question_text": "problem_en (the audit rows have no Korean problem text)"
+}
