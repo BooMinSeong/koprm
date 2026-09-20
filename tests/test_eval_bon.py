@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from koprm.eval.bon import (
@@ -119,3 +121,49 @@ def test_bootstrap_ci():
     assert ci["n"] == 100
     empty = bootstrap_ci([])
     assert empty["n"] == 0
+
+
+def test_evaluate_uses_and_validates_the_group_cache(tmp_path, monkeypatch):
+    """The grouping is dataset-only, so it is cached; a corrupt file is recomputed."""
+    from koprm.eval import bon
+
+    rows = [
+        {"problem_id": "A", "problem_ko": "p", "answer": "4",
+         "completions": [_completion(x) for x in ["4", "5", "5", "4"]]},
+        {"problem_id": "B", "problem_ko": "p", "answer": "7",
+         "completions": [_completion(x) for x in ["3", "3", "7", "7"]]},
+    ]
+    scores = [
+        [_steps(v) for v in (0.9, 0.8, 0.7, 0.2)],
+        [_steps(v) for v in (0.9, 0.8, 0.95, 0.1)],
+    ]
+    first = evaluate(rows, scores, agg="last", verbose=False, cache_dir=tmp_path)
+    cached = list(tmp_path.glob("groups_*.json"))
+    assert len(cached) == 1
+    assert not list(tmp_path.glob("*.tmp"))                    # the tmp file was renamed
+
+    def boom(*a, **kw):
+        raise AssertionError("AnswerGroups must not run on a cache hit")
+
+    monkeypatch.setattr(bon, "AnswerGroups", boom)
+    assert evaluate(rows, scores, agg="last", verbose=False, cache_dir=tmp_path) == first
+    monkeypatch.undo()
+
+    # a half-written / corrupt file, and a file that does not match the rows, are ignored
+    for bad in ("{not json", json.dumps([{"gids": [0], "correct": [True]}])):
+        cached[0].write_text(bad, encoding="utf-8")
+        assert evaluate(rows, scores, agg="last", verbose=False, cache_dir=tmp_path) == first
+
+    # no cache dir -> nothing is written, same numbers
+    assert evaluate(rows, scores, agg="last", verbose=False) == first
+
+
+def test_groups_key_depends_on_the_dataset_only():
+    from koprm.eval.bon import groups_key
+
+    rows = [{"problem_id": "A", "answer": "4", "completions": [_completion("4")]}]
+    same = [{"problem_id": "A", "answer": "4", "completions": [_completion("4")],
+             "problem_ko": "다른 텍스트"}]
+    other = [{"problem_id": "A", "answer": "5", "completions": [_completion("4")]}]
+    assert groups_key(rows) == groups_key(same)
+    assert groups_key(rows) != groups_key(other)

@@ -17,7 +17,9 @@ n = 1, 2, 4, ..., 64 over the *first n* completions - the komath
 Answers come from koprm.verify (last brace-balanced \\boxed + math_verify with a
 timeout); equal answers are grouped per problem against previously seen group
 representatives, so weighted/majority voting works on equivalence classes rather
-than raw strings.
+than raw strings. That grouping depends only on the dataset (answers and completions),
+so it is cached under data/eval/cache/groups_<sha1>.json and reused by every scorer
+evaluated on the same rows (--no-cache bypasses it).
 
     python -m koprm.eval.bon --dataset ENSEONG/ko-ko-math-500-test-EXAONE-4.0-1.2B-bon \\
         --use-existing-scores --limit 20 --out /tmp/bon.json
@@ -29,6 +31,7 @@ single-aggregation JSON.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -36,6 +39,7 @@ from pathlib import Path
 import numpy as np
 
 from koprm.data.sources import last_boxed
+from koprm.paths import EVAL
 from koprm.verify import answers_equal
 
 METHODS = ("naive", "weighted", "maj")
@@ -104,6 +108,92 @@ def _eq(a: str, b: str, timeout: float) -> bool:
 
 def _eq_gold(gold: str, pred: str, timeout: float) -> bool:
     return _eq(gold, pred, timeout)
+
+
+# ------------------------------------------------------- answer grouping cache
+# The grouping depends only on (problem_id, answer, completions), never on the scores, so
+# every scorer evaluated on the same dataset can reuse it (it is the slow part: math_verify
+# over 64 completions x 500 problems). Cache files are written atomically, and a file that
+# cannot be read or does not match the rows is simply recomputed.
+def groups_key(rows: list[dict]) -> str:
+    h = hashlib.sha1()
+    for r in rows:
+        h.update(str(r.get("problem_id")).encode("utf-8"))
+        h.update(b"\x00")
+        h.update(str(r["answer"]).encode("utf-8"))
+        h.update(b"\x00")
+        for c in r["completions"]:
+            h.update(str(c).encode("utf-8"))
+            h.update(b"\x01")
+        h.update(b"\x02")
+    return h.hexdigest()
+
+
+def compute_groups(rows: list[dict], timeout: float = 3.0) -> list[dict]:
+    """Per row: the answer group of each completion and whether each group is correct."""
+    out = []
+    for r in rows:
+        g = AnswerGroups(str(r["answer"]), timeout=timeout)
+        gids = [g.group_of(last_boxed(c)) for c in r["completions"]]
+        out.append({"gids": gids, "correct": [bool(x) for x in g.correct]})
+    return out
+
+
+def _valid_groups(groups, rows: list[dict]) -> bool:
+    if not isinstance(groups, list) or len(groups) != len(rows):
+        return False
+    for g, r in zip(groups, rows):
+        if not isinstance(g, dict):
+            return False
+        gids, correct = g.get("gids"), g.get("correct")
+        if not isinstance(gids, list) or not isinstance(correct, list):
+            return False
+        if len(gids) != len(r["completions"]) or not correct:
+            return False
+        if any(not isinstance(i, int) or i < 0 or i >= len(correct) for i in gids):
+            return False
+    return True
+
+
+def load_groups(cache_dir: str | Path, key: str, rows: list[dict]) -> list[dict] | None:
+    path = Path(cache_dir) / f"groups_{key}.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            groups = json.load(f)
+    except (OSError, json.JSONDecodeError):  # half-written or corrupt: recompute
+        return None
+    return groups if _valid_groups(groups, rows) else None
+
+
+def save_groups(cache_dir: str | Path, key: str, groups: list[dict]) -> None:
+    d = Path(cache_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / f"groups_{key}.json.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(groups, f)
+        os.replace(tmp, d / f"groups_{key}.json")  # atomic for concurrent evaluations
+    except OSError:
+        tmp.unlink(missing_ok=True)
+
+
+def answer_groups(rows: list[dict], timeout: float = 3.0,
+                  cache_dir: str | Path | None = None, verbose: bool = True) -> list[dict]:
+    if cache_dir is None:
+        return compute_groups(rows, timeout)
+    key = groups_key(rows)
+    cached = load_groups(cache_dir, key, rows)
+    if cached is not None:
+        if verbose:
+            print(f"[bon] answer groups from cache ({key[:12]})")
+        return cached
+    groups = compute_groups(rows, timeout)
+    save_groups(cache_dir, key, groups)
+    if verbose:
+        print(f"[bon] answer groups computed and cached ({key[:12]})")
+    return groups
 
 
 # ---------------------------------------------------------------- data access
@@ -191,7 +281,9 @@ def bootstrap_ci(per_problem_correct, iters: int = 1000, alpha: float = 0.05,
 
 
 def evaluate(rows: list[dict], step_scores: list[list[list[float]]], agg: str = "last",
-             timeout: float = 3.0, verbose: bool = True) -> dict:
+             timeout: float = 3.0, verbose: bool = True,
+             cache_dir: str | Path | None = None) -> dict:
+    """`cache_dir=None` (the default) touches no disk; `main` passes EVAL/"cache"."""
     n_max = min(len(r["completions"]) for r in rows)
     ns = n_grid(n_max)
     per_problem: dict[str, list[int]] = {f"{m}@{n}": [] for m in METHODS for n in ns}
@@ -199,12 +291,12 @@ def evaluate(rows: list[dict], step_scores: list[list[list[float]]], agg: str = 
         per_problem[f"pass@{n}"] = []
     pass1_per_problem: list[float] = []
     problem_ids: list = []
+    groups = answer_groups(rows, timeout=timeout, cache_dir=cache_dir, verbose=verbose)
 
     for i, r in enumerate(rows):
-        groups = AnswerGroups(str(r["answer"]), timeout=timeout)
+        gids, correct = groups[i]["gids"], groups[i]["correct"]
         aggs = [aggregate(s, agg) for s in step_scores[i]]
-        gids = [groups.group_of(last_boxed(c)) for c in r["completions"]]
-        corr = [1 if groups.correct[g] else 0 for g in gids]
+        corr = [1 if correct[g] else 0 for g in gids]
         pass1_per_problem.append(float(np.mean(corr)))
         problem_ids.append(r["problem_id"])
         for n in ns:
@@ -220,8 +312,8 @@ def evaluate(rows: list[dict], step_scores: list[list[list[float]]], agg: str = 
                 cnt[g] = cnt.get(g, 0) + 1
             gw = max(wsum, key=lambda g: (wsum[g], -g_n.index(g)))
             gm = max(cnt, key=lambda g: (cnt[g], -g_n.index(g)))
-            per_problem[f"weighted@{n}"].append(1 if groups.correct[gw] else 0)
-            per_problem[f"maj@{n}"].append(1 if groups.correct[gm] else 0)
+            per_problem[f"weighted@{n}"].append(1 if correct[gw] else 0)
+            per_problem[f"maj@{n}"].append(1 if correct[gm] else 0)
             per_problem[f"pass@{n}"].append(1 if any(c_n) else 0)
         if verbose and (i + 1) % 25 == 0:
             print(f"[bon] {i + 1}/{len(rows)} problems")
@@ -290,6 +382,8 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--max-len", type=int, default=4096)
     ap.add_argument("--timeout", type=float, default=3.0)
+    ap.add_argument("--no-cache", action="store_true",
+                    help=f"do not reuse the answer grouping cached under {EVAL / 'cache'}")
     args = ap.parse_args()
 
     rows = (load_hf_rows(args.dataset, args.dataset_config, args.split, args.limit)
@@ -308,7 +402,9 @@ def main() -> None:
         scorer_name = args.scorer
 
     aggs = ["last", "min"] if args.agg == "both" else [args.agg]
-    results = {a: evaluate(rows, scores, agg=a, timeout=args.timeout) for a in aggs}
+    cache_dir = None if args.no_cache else EVAL / "cache"
+    results = {a: evaluate(rows, scores, agg=a, timeout=args.timeout, cache_dir=cache_dir)
+               for a in aggs}
     source = args.dataset or args.jsonl
     out = combine(results, source, scorer_name)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
