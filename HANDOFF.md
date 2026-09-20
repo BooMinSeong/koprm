@@ -1,6 +1,29 @@
-# 인수인계 (2026-09-20, 서버 이전용)
+# 인수인계 — §5 전 단계 완료 (2026-09-20)
 
-새 세션은 이 문서와 `Plan.md`(§13.0·§13.1의 결정 기록)를 읽고 §5의 순서대로 진행한다. 코드 작성은 Opus 에이전트에 맡기고 메인 세션은 판단·검토·실행 결정을 맡는다(사용자 지침).
+분할부터 KO MATH500 재채점까지 §5의 전 단계를 실행했다. 결과와 판정은 `Plan.md` §15에, 모든 표는 `data/reports/results.md`에 있다. 새 세션은 이 문서와 `Plan.md`(§15 결과, §13.0·§13.1 결정 기록)를 읽고 "다음 세션이 할 일"부터 이어 간다. 코드 작성은 Opus 에이전트에 맡기고 메인 세션은 판단·검토·실행 결정을 맡는다(사용자 지침).
+
+## 핵심 결과 (자세한 내용은 Plan §15)
+
+세 가지 사전 등록 비교(§1) 중 "같은 크기에서 B ≥ A"는 성립하고(차이가 0을 포함), "A+B가 둘 이상"은 3k·6k의 naive@16에서만 유의하며, 학습 곡선은 6천에서 1.2만 사이가 평평해 §1의 두 번째 증거는 성립하지 않는다. 이번 실행의 주 발견은 절제다. KO MATH500·EXAONE naive@64에서 현행(영어 PRM 직접) 0.664, 커널 하드 라벨 B_12k 0.520, 교사 소프트 타깃 0.692, 결과 항만 쓴 학생 0.740이다. 결과 항만 쓴 학생이 모든 지표에서 현행을 넘고 n=64에서 꺾이지 않는 유일한 학생이며, 같은 순서가 Qwen2.5-3B와 홀드아웃 Qwen2.5-1.5B에서도 나온다. 번역 다리를 건넌 교사(72B, min, n=16)는 naive@16 0.762로 현행 0.670보다 높아, 다리가 아니라 학생과 라벨 형식이 병목이다.
+
+## 산출물 위치
+
+```
+data/splits/      dev, train_pool, math500, prm800k_audit, prm800k_A_pool
+data/trans/       문제·스텝 번역 (problems_ko, selected.steps_en, prm800k_A.steps_ko,
+                  audit.steps_ko, audit.steps_en_rt, math500_exaone16.steps_en)
+data/gen/         생성 결과와 y 채점, selected.jsonl
+data/teacher/     72B 로그 오즈 (B, 감사 rt/direct, MATH500 참조선)
+data/labels/      A.jsonl, B.jsonl, B.refs.json, audit_rows.jsonl
+data/trainsets/   {A,B,AB}_{3k,6k,12k}.jsonl
+data/ckpt/<run>/epoch{1,2,3}   학습 11회 × 3에폭
+data/eval/dev/, data/eval/math500/, data/eval/selection.json, data/eval/cache/
+data/reports/results.md, results.json, audit.json, student_audit_<run>.json
+logs/*.sh         단계별 드라이버(gen_all, translate_*, teacher_*, labels, train_all,
+                  post_eval, final_eval, reference_line)와 그 로그
+```
+
+`data/reports/`만 커밋한다. 나머지 `data/`와 `logs/`는 커밋하지 않는다.
 
 ## 사용자 지침 (반드시 지킬 것)
 
@@ -35,12 +58,14 @@ koprm/label/kernel.py, build.py, audit.py  기준 분포·커널 (§2.3–2.4), 
 koprm/select.py, trainsets.py         §4.2 선택, §4.5 학습 세트(3k⊂6k⊂12k, A/B/A+B)
 koprm/train/{model,data,loss,train}.py 학생 모델·손실(§6.1)·학습 루프
 koprm/eval/{scorer,bon}.py            학생 채점기, BoN 재채점 평가(naive/weighted/maj, 부트스트랩)
+koprm/prep.py                         단계 사이의 입력 jsonl 조립(problems-in/ko, teacher-in 등)
+koprm/report.py                       §7 보고 항목 조립(results.md/json), 교사 참조선, 학생 첫 오류 감사
 scripts/check_teacher.py, check_student.py  1일차 점검
 ```
 
-테스트: `.venv/bin/python -m pytest tests -q` (106개 통과해야 함).
+테스트: `.venv/bin/python -m pytest tests -q` (121개 통과해야 함).
 
-## 새 서버에서 먼저 할 일
+## 재현 순서 (새 서버에서 처음부터 돌릴 때)
 
 1. `git clone` 후 `uv sync --extra dev`(vLLM 0.29.0, transformers 5.17). HF 토큰은 사용자 계정(ENSEONG).
 2. 모델 다운로드를 즉시 시작: `Qwen/Qwen2.5-Math-PRM-72B`(139GB, 가장 오래 걸림), `google/gemma-4-12B-it`(게이트 아님), `LGAI-EXAONE/EXAONE-4.0-1.2B`, `Qwen/Qwen2.5-3B-Instruct`, `Qwen/Qwen2.5-1.5B-Instruct`, `Qwen/Qwen2.5-Math-PRM-7B`(점검용). 데이터셋: `openai/gsm8k`, `HuggingFaceH4/MATH-500`, `ENSEONG/ko-math-500-test`, `tasksource/PRM800K`, `ENSEONG/ko-ko-math-500-test-{EXAONE-4.0-1.2B,Qwen2.5-3B-Instruct,Qwen2.5-1.5B-Instruct}-bon`. MATH 원본은 `EleutherAI/hendrycks_math`로 폴백된다(`KOPRM_MATH_DIR`로 로컬 사본 지정 가능).
@@ -48,6 +73,15 @@ scripts/check_teacher.py, check_student.py  1일차 점검
 4. 문제 번역: `data/trans/problems_in.jsonl`(dev+train_pool, id=problem_id)을 만들고
    `python -m koprm.translate.translate --in data/trans/problems_in.jsonl --out data/trans/problems_ko.jsonl --field problem_en --out-field problem_ko --src en --tgt ko --primary-model google/gemma-4-12B-it --primary-backend instruct` (1 GPU 약 30분).
 5. 이후 §5 순서: 생성(dev 500×2생성기×16, train 풀 14,473×2×2; `--shard/--num-shards`로 GPU 분할) → y 채점 → 감사 세트 왕복(영→한→영)과 72B 채점 → 커널 정밀도 확인(§9 관문: 90%) → 선택 → B 라벨링 → A 번역 → 학습 세트 → 학습 11회 → dev 선택 → MATH500 재채점.
+
+## 다음 세션이 할 일
+
+1. 라벨 형식을 정한다. 결과 항만 또는 소프트 타깃 B를 기본 팔로 삼는 것이 이번 실행에서 가장 강한 구성이다(Plan §15.2).
+2. Plan §12.1의 한 점 MC로 마스크된 70%의 스텝을 채운다.
+3. Plan §12.2의 영어 PRM 체크포인트 초기화로 학생의 출발점을 올린다.
+4. 학생의 첫 오류 감사를 한국어 문제 텍스트로 다시 잰다(이번 수치는 영어 문제 조건이라 불리하다).
+
+무엇을 할지는 사용자가 정한다. 그리고 이 서버에는 자격 증명이 없어 GitHub push가 밀려 있다. 커밋은 로컬에만 있으므로 다음 세션에서 `main`으로 push한다.
 
 ## 알려진 주의점
 
@@ -57,3 +91,6 @@ scripts/check_teacher.py, check_student.py  1일차 점검
 - 번역된 영어 스텝의 6~8%에 `\text{인치}`처럼 마스킹된 수식 안의 한글이 남는다. 손대지 않고 한계로 둔다.
 - EXAONE 생성기는 프롬프트의 "[간결한 설명]"을 그대로 베끼는 버릇이 있다. 무해하다.
 - 파일럿 정답률(EXAONE, KO MATH500 50문제): 56%. math_verify 오탐 0건 확인.
+- vLLM 프로세스를 `pkill`로 끊으면 워커가 고아로 남아 GPU 메모리를 잡고 있다. 다음 작업 전에 `nvidia-smi`로 확인하고 남은 워커를 직접 정리한다.
+- `koprm/eval/bon.py`는 `load_hf_rows`에서 `HF_HUB_OFFLINE=1`을 setdefault한다. 저장된 BoN 데이터셋을 새로 받아야 하면 `HF_HUB_OFFLINE=0`으로 실행한다(`koprm.report teacher-ref`는 스스로 0으로 설정한다).
+- 저장된 64샘플 데이터셋의 config 이름은 `ENSEONG_ko-math-500-test--T-0.8--top_p-1.0--n-64--seed-{0,42,64}--agg_strategy-last`다. 이번 실행은 seed 0을 썼다.

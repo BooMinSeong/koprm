@@ -28,6 +28,10 @@ uv sync --extra dev          # vllm 0.29, transformers 5.17, torch 2.13, math-ve
 
 단계 사이의 입력 jsonl은 `koprm.prep`의 하위 명령(`problems-in`, `problems-ko`, `prm800k-problems-in`, `teacher-in`)으로 앞 단계 산출물에서 만든다. 모든 단계는 jsonl을 `id` 기준으로 재개할 수 있고, 생성·번역은 `--shard i --num-shards k`로 GPU별 프로세스를 나눠 돌린다.
 
+## 결과
+
+§5 전 단계를 2026-09-20에 실행했다. 모든 표는 [data/reports/results.md](data/reports/results.md)에, 판정과 요약은 [Plan.md](Plan.md) §15에 있다.
+
 ## 참고 구현
 
 - `../komath`: KO MATH500 테스트타임 컴퓨트 하네스. 생성 프롬프트, `\n\n` 스텝 분절, math_verify 채점 방식, BoN 집계(naive/weighted/maj)를 그대로 따른다.
