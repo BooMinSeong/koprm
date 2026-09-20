@@ -5,6 +5,12 @@ Nothing is recomputed that a stage already stored: this module joins
 `data/trainsets/*` into `reports/results.json` (the numbers) and `reports/results.md`
 (the tables). A missing input degrades to "(not available)"; nothing crashes.
 
+The second part, "확장 실험 (2026-09-21)", reads the enlarged nested family
+(eval/dev_big, eval/math500_big), the 3B student (eval/dev3b, eval/math500_3b), the
+soft+y run on the original 12k set and the four aggregations (eval/agg). Those runs carry
+no selection.json, so the epoch is chosen here: argmax over epochs of
+(naive@16 + weighted@16)/2 on dev, ties to the later epoch.
+
     python -m koprm.report results [--data-dir data] [--out-dir data/reports]
     python -m koprm.report teacher-ref --dataset ENSEONG/ko-ko-math-500-test-EXAONE-4.0-1.2B-bon \\
         --dataset-config <cfg> --teacher data/teacher/math500_exaone16.jsonl \\
@@ -20,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -44,6 +51,19 @@ TRANS_FILES = ("problems_ko.jsonl", "selected.steps_en.jsonl", "prm800k_A.steps_
                "audit.steps_ko.jsonl", "audit.steps_en_rt.jsonl",
                "math500_exaone16.steps_en.jsonl")
 QUANTILES = (0.05, 0.25, 0.5, 0.75, 0.95)
+
+# --- 확장 실험 (2026-09-21): the enlarged nested family, the 3B backbone, the aggregations
+DEV_GEN = "exaone-1.2b"
+BIG_SIZES = ("12k", "24k", "48k")
+LABEL_FORMS = (("", "하드(커널)"), ("_soft", "소프트"), ("_soft_y", "소프트+y"),
+               ("_outcome", "결과 항만"))
+BIG_RUNS = tuple(f"B_{s}{sfx}" for s in BIG_SIZES for sfx, _ in LABEL_FORMS)
+Q3B_BASE = ("A_12k", "B_12k", "B_12k_soft", "B_12k_soft_y", "B_12k_outcome")
+AGG_RUNS = ("existing", "A_12k", "B_12k", "B_12k_soft", "B_12k_outcome", "AB_12k")
+AGGS = ("last", "min", "prod", "mean")
+AGG_COLS = (("naive", 16), ("naive", 64), ("weighted", 64))
+SOFT_Y_RUN = "B_12k_soft_y"
+_EP_RE = re.compile(r"_ep(\d+)_")
 
 
 # ----------------------------------------------------------------- loading / formatting
@@ -345,6 +365,135 @@ def collect_reference_lines(data: Path) -> dict:
     return out
 
 
+# ------------------------------------------------- 확장 실험: file readers and epoch choice
+def _epoch_of(name: str) -> int | None:
+    m = _EP_RE.search(name)
+    return int(m.group(1)) if m else None
+
+
+def dev_epoch(dev_dir: str | Path, run: str, gen: str = DEV_GEN) -> tuple[int | None, dict | None]:
+    """The epoch with the best (naive@16 + weighted@16)/2 on dev; ties go to the later one."""
+    best: tuple[float, int, dict] | None = None
+    for path in sorted(Path(dev_dir).glob(f"{run}_ep*_{gen}.json")):
+        ep = _epoch_of(path.name)
+        res = flat_result(load_json(path))
+        n, w = metric(res, "naive", 16), metric(res, "weighted", 16)
+        if ep is None or n is None or w is None:
+            continue
+        score = (n + w) / 2
+        if best is None or score > best[0] or (score == best[0] and ep >= best[1]):
+            best = (score, ep, res)
+    return (None, None) if best is None else (best[1], best[2])
+
+
+def run_file(dirpath: str | Path, run: str, gen: str, epoch: int | None = None) -> dict | None:
+    """The raw json of <run>_ep<epoch>_<gen>.json; falls back to the only file if unique."""
+    d = Path(dirpath)
+    if epoch is not None:
+        path = d / f"{run}_ep{epoch}_{gen}.json"
+        if path.exists():
+            return load_json(path)
+    cands = sorted(d.glob(f"{run}_ep*_{gen}.json"))
+    return load_json(cands[0]) if len(cands) == 1 else None
+
+
+def _gen_cells(raw: dict | None, agg: str = "last") -> dict:
+    res = flat_result(raw, agg)
+    return {"naive@16": metric(res, "naive", 16), "naive@64": metric(res, "naive", 64),
+            "weighted@64": metric(res, "weighted", 64)}
+
+
+def collect_agg_table(data: Path) -> dict:
+    """(g) label form x aggregation, EXAONE only: eval/agg/*.json plus the soft+y run."""
+    out: dict[str, dict] = {}
+    for name in AGG_RUNS:
+        raw = load_json(data / "eval/agg" / f"{name}.json")
+        out[name] = {a: _gen_cells(raw, a) for a in AGGS}
+    ep, _ = dev_epoch(data / "eval/dev", SOFT_Y_RUN)
+    raw = run_file(data / "eval/math500", SOFT_Y_RUN, PRIMARY_GEN, ep)
+    out[SOFT_Y_RUN] = {a: _gen_cells(raw, a) for a in AGGS}
+    return out
+
+
+def collect_big(data: Path) -> tuple[dict, list[dict]]:
+    """(h) the nested 12k/24k/48k family (1.2B): dev, MATH500 and the size deltas."""
+    dev_dir, m500 = data / "eval/dev_big", data / "eval/math500_big"
+    rows: dict[str, dict] = {}
+    primary: dict[str, dict | None] = {}
+    for run in BIG_RUNS:
+        ep, dev = dev_epoch(dev_dir, run)
+        entry: dict = {
+            "epoch": ep,
+            "dev": {"naive@16": metric(dev, "naive", 16),
+                    "weighted@16": metric(dev, "weighted", 16)},
+        }
+        for gen in (PRIMARY_GEN, M500_GENS[1]):
+            raw = run_file(m500, run, gen, ep)
+            entry[gen] = _gen_cells(raw, "last")
+            if gen == PRIMARY_GEN:
+                primary[run] = flat_result(raw, "last")
+        rows[run] = entry
+
+    deltas = []
+    for sfx, label in LABEL_FORMS:
+        for a, b in (("24k", "12k"), ("48k", "24k")):
+            for key in ("naive@16", "naive@64"):
+                deltas.append({
+                    "label_form": label,
+                    "comparison": f"B_{a}{sfx} - B_{b}{sfx}",
+                    "metric": key,
+                    "result": paired_diff(primary.get(f"B_{a}{sfx}"),
+                                          primary.get(f"B_{b}{sfx}"), key),
+                })
+    return rows, deltas
+
+
+def collect_backbone(data: Path, selection: dict | None) -> dict:
+    """(i) 3B vs 1.2B student on the original 12k sets."""
+    out: dict[str, dict] = {}
+    for run in Q3B_BASE:
+        ep12 = _run_epoch(selection, run)
+        if ep12 is None:
+            ep12, _ = dev_epoch(data / "eval/dev", run)
+        ep3b, _ = dev_epoch(data / "eval/dev3b", f"q3b_{run}")
+        entry: dict = {"epoch_1.2b": ep12, "epoch_3b": ep3b}
+        for tag, (d, name, ep) in {
+            "1.2b": (data / "eval/math500", run, ep12),
+            "3b": (data / "eval/math500_3b", f"q3b_{run}", ep3b),
+        }.items():
+            entry[tag] = {
+                PRIMARY_GEN: _gen_cells(run_file(d, name, PRIMARY_GEN, ep), "last"),
+                M500_GENS[1]: _gen_cells(run_file(d, name, M500_GENS[1], ep), "last"),
+            }
+        out[run] = entry
+    return out
+
+
+def collect_soft_y(data: Path, selection: dict | None) -> dict:
+    """(j) soft+y vs soft vs outcome on the original 12k set."""
+    out: dict[str, dict] = {}
+    for run in (SOFT_Y_RUN, "B_12k_soft", "B_12k_outcome"):
+        ep = _run_epoch(selection, run)
+        if ep is None:
+            ep, _ = dev_epoch(data / "eval/dev", run)
+        entry: dict = {"epoch": ep}
+        for gen in (PRIMARY_GEN, M500_GENS[1]):
+            entry[gen] = _gen_cells(run_file(data / "eval/math500", run, gen, ep), "last")
+        out[run] = entry
+    return out
+
+
+def collect_extended(data: Path, selection: dict | None) -> dict:
+    big, deltas = collect_big(data)
+    return {
+        "agg_table": collect_agg_table(data),
+        "big": big,
+        "big_deltas": deltas,
+        "backbone": collect_backbone(data, selection),
+        "soft_y": collect_soft_y(data, selection),
+    }
+
+
 def collect(data: Path) -> dict:
     selection = load_json(data / "eval/selection.json")
     tables, raw = collect_math500(data, selection)
@@ -355,6 +504,7 @@ def collect(data: Path) -> dict:
         "pipeline": collect_pipeline(data),
         "reference_lines": collect_reference_lines(data),
         "primary_generator": PRIMARY_GEN,
+        "extended": collect_extended(data, selection),
     }
 
 
@@ -492,6 +642,80 @@ def _reference_md(ref: dict) -> str:
     return md_table(header, rows)
 
 
+def _agg_md(table: dict) -> str:
+    header = ["scorer"] + [f"{a} {m}@{n}" for a in AGGS for m, n in AGG_COLS]
+    rows = []
+    for name, per_agg in table.items():
+        r = [name]
+        for a in AGGS:
+            cell = per_agg.get(a) or {}
+            r += [fmt(cell.get(f"{m}@{n}")) for m, n in AGG_COLS]
+        rows.append(r)
+    return md_table(header, rows)
+
+
+def _big_md(big: dict) -> str:
+    header = ["라벨 형식", "크기", "epoch", "dev naive@16", "dev weighted@16",
+              "EXAONE naive@16", "EXAONE naive@64", "EXAONE weighted@64",
+              "Qwen-3B naive@64", "Qwen-3B weighted@64"]
+    rows = []
+    for sfx, label in LABEL_FORMS:
+        for size in BIG_SIZES:
+            e = big.get(f"B_{size}{sfx}", {})
+            dev = e.get("dev") or {}
+            ex, qw = e.get(PRIMARY_GEN) or {}, e.get(M500_GENS[1]) or {}
+            rows.append([label, size,
+                         str(e.get("epoch")) if e.get("epoch") is not None else NA,
+                         fmt(dev.get("naive@16")), fmt(dev.get("weighted@16")),
+                         fmt(ex.get("naive@16")), fmt(ex.get("naive@64")),
+                         fmt(ex.get("weighted@64")),
+                         fmt(qw.get("naive@64")), fmt(qw.get("weighted@64"))])
+    return md_table(header, rows)
+
+
+def _backbone_md(backbone: dict) -> str:
+    header = ["라벨 형식(12k)", "학생", "epoch", "EXAONE naive@16", "EXAONE naive@64",
+              "EXAONE weighted@64", "Qwen-3B naive@64"]
+    rows = []
+    for run, e in backbone.items():
+        for tag, size in (("1.2b", "EXAONE-4.0-1.2B"), ("3b", "Qwen2.5-3B-Instruct")):
+            cells = e.get(tag) or {}
+            ex, qw = cells.get(PRIMARY_GEN) or {}, cells.get(M500_GENS[1]) or {}
+            ep = e.get(f"epoch_{tag}")
+            rows.append([run, size, str(ep) if ep is not None else NA,
+                         fmt(ex.get("naive@16")), fmt(ex.get("naive@64")),
+                         fmt(ex.get("weighted@64")), fmt(qw.get("naive@64"))])
+    return md_table(header, rows)
+
+
+def _soft_y_md(soft_y: dict) -> str:
+    header = ["run", "epoch", "EXAONE naive@16", "EXAONE naive@64", "EXAONE weighted@64",
+              "Qwen-3B naive@64", "Qwen-3B weighted@64"]
+    rows = []
+    for run, e in soft_y.items():
+        ex, qw = e.get(PRIMARY_GEN) or {}, e.get(M500_GENS[1]) or {}
+        rows.append([run, str(e.get("epoch")) if e.get("epoch") is not None else NA,
+                     fmt(ex.get("naive@16")), fmt(ex.get("naive@64")),
+                     fmt(ex.get("weighted@64")),
+                     fmt(qw.get("naive@64")), fmt(qw.get("weighted@64"))])
+    return md_table(header, rows)
+
+
+def render_extended_md(ext: dict) -> list[str]:
+    out = ["## 확장 실험 (2026-09-21)", "",
+           "에폭은 dev의 (naive@16 + weighted@16)/2가 가장 큰 것을 쓴다(동점이면 나중 에폭).",
+           "", "### g. 라벨 형식 × 집계 (EXAONE)", "", _agg_md(ext["agg_table"]), "",
+           "### h. 학습 곡선 12k/24k/48k (늘린 B 풀, 학생 1.2B)", "", _big_md(ext["big"]), "",
+           "크기 간 차이(EXAONE, 문제 단위 대응 부트스트랩 95% CI):", ""]
+    out.append(md_table(["라벨 형식", "비교", "지표", "차이 [CI]"],
+                        [[d["label_form"], d["comparison"], d["metric"], fmt_diff(d["result"])]
+                         for d in ext["big_deltas"]]))
+    out += ["", "### i. 학생 백본 비교 (원래 12k 세트)", "", _backbone_md(ext["backbone"]), "",
+            "### j. 소프트+y 대 소프트 대 결과 항만 (원래 12k 세트)", "",
+            _soft_y_md(ext["soft_y"]), ""]
+    return out
+
+
 def render_md(res: dict) -> str:
     out = ["# 결과 (Plan §7 보고 항목)", "",
            f"주 평가 생성기: {res['primary_generator']}. 값이 없는 칸은 {NA}다.", "",
@@ -507,6 +731,8 @@ def render_md(res: dict) -> str:
     out += ["## d. 절제", "", _ablation_md(res), ""]
     out += _pipeline_md(res["pipeline"])
     out += ["", "### f. 참조선", "", _reference_md(res["reference_lines"]), ""]
+    if res.get("extended"):
+        out += render_extended_md(res["extended"])
     return "\n".join(out)
 
 

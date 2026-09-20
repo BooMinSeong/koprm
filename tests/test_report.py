@@ -245,3 +245,111 @@ def test_collect_on_an_empty_tree(tmp_path):
     assert res["pipeline"]["labels_B"] is None
     md = render_md(res)
     assert NA in md and "## b. KO MATH500" in md
+
+
+# ------------------------------------------------------------- 확장 실험 (2026-09-21)
+
+
+def _all_shape(v, per_naive=(1, 1, 0, 0)):
+    """An --agg all file: last/min/prod/mean, each a flat result."""
+    return {a: _bon(v - i * 0.01, per_naive=per_naive, agg=a)
+            for i, a in enumerate(("last", "min", "prod", "mean"))}
+
+
+def test_dev_epoch_picks_the_best_mean_and_breaks_ties_late(tmp_path):
+    from koprm.report import dev_epoch
+
+    for ep, (n, w) in enumerate([(0.40, 0.60), (0.55, 0.60), (0.50, 0.65)], start=1):
+        _write_json(tmp_path / f"B_24k_ep{ep}_exaone-1.2b.json", _bon(n, w))
+    ep, res = dev_epoch(tmp_path, "B_24k")
+    assert ep == 3                               # (0.50+0.65)/2 ties ep2, later epoch wins
+    assert res["metrics"]["16"]["weighted"] == 0.65
+    assert dev_epoch(tmp_path, "B_48k") == (None, None)
+
+
+def test_run_file_prefers_the_selected_epoch(tmp_path):
+    from koprm.report import run_file
+
+    _write_json(tmp_path / "B_24k_ep2_EXAONE-4.0-1.2B.json", _all_shape(0.50))
+    _write_json(tmp_path / "B_24k_ep3_EXAONE-4.0-1.2B.json", _all_shape(0.70))
+    got = run_file(tmp_path, "B_24k", "EXAONE-4.0-1.2B", 3)
+    assert got["last"]["metrics"]["16"]["naive"] == 0.70
+    # no epoch match and more than one candidate -> nothing rather than a guess
+    assert run_file(tmp_path, "B_24k", "EXAONE-4.0-1.2B", 9) is None
+    # a single file is used whatever the epoch asked for
+    _write_json(tmp_path / "B_48k_ep1_EXAONE-4.0-1.2B.json", _all_shape(0.60))
+    assert run_file(tmp_path, "B_48k", "EXAONE-4.0-1.2B", 3)["last"]["agg"] == "last"
+
+
+def _extended_tree(tmp_path):
+    data = tmp_path / "data"
+    # (g) the four aggregations for two scorers
+    for name, v in (("existing", 0.66), ("B_12k", 0.52)):
+        _write_json(data / "eval/agg" / f"{name}.json", _all_shape(v))
+    # the soft+y run on the original 12k set: dev picks the epoch, math500 carries it
+    _write_json(data / "eval/dev/B_12k_soft_y_ep1_exaone-1.2b.json", _bon(0.60, 0.68))
+    _write_json(data / "eval/dev/B_12k_soft_y_ep2_exaone-1.2b.json", _bon(0.64, 0.68))
+    for gen in ("EXAONE-4.0-1.2B", "Qwen2.5-3B-Instruct"):
+        _write_json(data / "eval/math500" / f"B_12k_soft_y_ep2_{gen}.json", _all_shape(0.71))
+    # (h) two sizes of one label form
+    for size, v, per in (("12k", 0.60, (1, 1, 0, 0)), ("24k", 0.70, (1, 1, 1, 0))):
+        _write_json(data / "eval/dev_big" / f"B_{size}_ep3_exaone-1.2b.json", _bon(v))
+        for gen in ("EXAONE-4.0-1.2B", "Qwen2.5-3B-Instruct"):
+            _write_json(data / "eval/math500_big" / f"B_{size}_ep3_{gen}.json",
+                        _all_shape(v, per_naive=per))
+    # (i) the 3B student on the original B_12k set
+    _write_json(data / "eval/dev3b/q3b_B_12k_ep2_exaone-1.2b.json", _bon(0.66, 0.70))
+    _write_json(data / "eval/math500_3b/q3b_B_12k_ep2_EXAONE-4.0-1.2B.json", _all_shape(0.74))
+    _write_json(data / "eval/math500/B_12k_ep3_EXAONE-4.0-1.2B.json",
+                {"last": _bon(0.61), "min": _bon(0.62, agg="min")})
+    _write_json(data / "eval/selection.json", {"B_12k": {"epoch": 3}})
+    return data
+
+
+def test_collect_extended_reads_every_part(tmp_path):
+    from koprm.report import collect_extended, load_json
+
+    data = _extended_tree(tmp_path)
+    ext = collect_extended(data, load_json(data / "eval/selection.json"))
+
+    agg = ext["agg_table"]
+    assert agg["existing"]["last"]["naive@16"] == 0.66
+    assert agg["existing"]["mean"]["naive@16"] == pytest.approx(0.63)
+    assert agg["A_12k"]["last"]["naive@16"] is None          # file absent
+    assert agg["B_12k_soft_y"]["last"]["naive@16"] == 0.71   # epoch 2 chosen on dev
+
+    big = ext["big"]
+    assert big["B_12k"]["epoch"] == 3 and big["B_24k"]["dev"]["naive@16"] == 0.70
+    assert big["B_24k"]["EXAONE-4.0-1.2B"]["naive@64"] == 0.70
+    assert big["B_24k"]["Qwen2.5-3B-Instruct"]["weighted@64"] == 0.5
+    assert big["B_48k"]["epoch"] is None                     # no files for that size
+    assert big["B_12k_soft"]["EXAONE-4.0-1.2B"]["naive@16"] is None
+
+    d = next(x for x in ext["big_deltas"]
+             if x["comparison"] == "B_24k - B_12k" and x["metric"] == "naive@16")
+    assert d["label_form"] == "하드(커널)" and d["result"]["diff"] == 0.25
+    assert next(x for x in ext["big_deltas"]
+                if x["comparison"] == "B_48k - B_24k")["result"] is None
+
+    bb = ext["backbone"]["B_12k"]
+    assert bb["epoch_1.2b"] == 3 and bb["epoch_3b"] == 2
+    assert bb["1.2b"][PRIMARY := "EXAONE-4.0-1.2B"]["naive@16"] == 0.61
+    assert bb["3b"][PRIMARY]["naive@16"] == 0.74
+    assert ext["backbone"]["A_12k"]["1.2b"][PRIMARY]["naive@16"] is None
+
+    sy = ext["soft_y"]["B_12k_soft_y"]
+    assert sy["epoch"] == 2 and sy["EXAONE-4.0-1.2B"]["weighted@64"] == 0.5
+    assert ext["soft_y"]["B_12k_outcome"]["EXAONE-4.0-1.2B"]["naive@16"] is None
+
+
+def test_extended_section_is_rendered_and_degrades(tmp_path):
+    data = _extended_tree(tmp_path)
+    md = render_md(collect(data))
+    assert "## 확장 실험 (2026-09-21)" in md
+    for head in ("### g. 라벨 형식 × 집계", "### h. 학습 곡선 12k/24k/48k",
+                 "### i. 학생 백본 비교", "### j. 소프트+y"):
+        assert head in md
+    assert "B_24k - B_12k" in md and NA in md
+
+    empty = render_md(collect(tmp_path / "nothing"))
+    assert "## 확장 실험 (2026-09-21)" in empty and NA in empty
