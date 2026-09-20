@@ -4,6 +4,10 @@ Input : problems jsonl with `problem_id`, `problem_ko`, `answer`.
 Output: jsonl rows {id, problem_id, generator, sample_idx, text, steps, finish_reason,
         n_tokens} where id = f"{problem_id}#{generator}#{sample_idx}".
 
+A second pass over the same problems (a different --seed, more samples) must not reuse
+those ids: --sample-offset N shifts sample_idx (and therefore the id suffix) by N, so
+pass 2 with --n 2 --sample-offset 2 continues where pass 1 stopped.
+
 Sharding: --shard i --num-shards k takes every k-th problem, so several processes
 (one per GPU) can run side by side; output files are per shard and resumable.
 Steps are split on blank lines (§3): the same convention the komath harness uses
@@ -44,6 +48,7 @@ def generate(
     gpu_memory_utilization: float = 0.85,
     tensor_parallel_size: int = 1,
     batch_problems: int = 512,
+    sample_offset: int = 0,
 ) -> None:
     from vllm import LLM, SamplingParams
 
@@ -70,7 +75,8 @@ def generate(
         outs = llm.generate(prompts, sp, use_tqdm=True)
         rows = []
         for p, o in zip(chunk, outs):
-            for k, c in enumerate(o.outputs):
+            for j, c in enumerate(o.outputs):
+                k = j + sample_offset
                 rows.append(
                     {
                         "id": f"{p['problem_id']}#{generator}#{k}",
@@ -93,6 +99,8 @@ def main() -> None:
     ap.add_argument("--generator", required=True, choices=list(GENERATORS) + ["custom"])
     ap.add_argument("--model-path", default=None)
     ap.add_argument("--n", type=int, default=2)
+    ap.add_argument("--sample-offset", type=int, default=0,
+                    help="shift sample_idx (and the id suffix) so a second pass cannot collide")
     ap.add_argument("--out", required=True)
     ap.add_argument("--temperature", type=float, default=0.8)
     ap.add_argument("--max-tokens", type=int, default=2048)
@@ -123,6 +131,7 @@ def main() -> None:
         seed=args.seed + args.shard,
         gpu_memory_utilization=args.gpu_memory_utilization,
         tensor_parallel_size=args.tp,
+        sample_offset=args.sample_offset,
     )
 
 

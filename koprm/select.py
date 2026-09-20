@@ -1,4 +1,4 @@
-"""§4.2 Selection: one correct and one wrong solution per mixed problem.
+"""§4.2 Selection: up to K correct and K wrong solutions per mixed problem (K=1 by default).
 
 y is free, translation and the 72B teacher are not, so the cut happens here -- before
 the expensive stages.
@@ -8,18 +8,20 @@ the expensive stages.
     because an unusable solution cannot be the one we pick.
   * Mixed = at least one eligible correct (outcome=1) and one eligible wrong (outcome=0)
     solution across all generators. Only those problems can change a verifier's ranking.
-  * Per mixed problem we take one correct and one wrong at random, balancing generators:
-    the correct one comes from whichever generator has supplied the fewest correct
-    solutions so far (so the two alternate), and the wrong one is preferred from a
-    *different* generator, falling back to the same one when only it has a wrong
-    solution.
-  * Cap at --max-problems (6,000 = 12,000 solutions), filling MATH problems first and
+  * Per mixed problem we take up to --per-class K correct and K wrong solutions at
+    random, balancing generators: every pick comes from whichever generator has supplied
+    the fewest solutions of that class so far (ties by name), never the same row twice,
+    and the *first* wrong pick prefers a generator other than the first correct pick's,
+    falling back to it when no other generator has a wrong solution. A problem with fewer
+    than K solutions in a class contributes what it has (it is mixed, so at least one of
+    each). K=1 is the original behaviour, row for row.
+  * Cap at --max-problems (6,000 problems = 12,000 solutions at K=1), filling MATH first and
     GSM8K with what is left, because the evaluation is MATH500.
 
 Output: the chosen generation rows, unchanged, plus `arm: "B"`.
 
     python -m koprm.select --gen 'data/gen/*.scored.jsonl' \
-        --problems data/splits/train_pool.jsonl --out data/gen/selected.jsonl
+        --problems data/splits/train_pool.jsonl --out data/gen/selected.jsonl [--per-class 2]
 """
 from __future__ import annotations
 
@@ -48,11 +50,32 @@ def eligible(row: dict) -> bool:
     )
 
 
+def _take(by_gen: dict[str, list[dict]], counts: dict[str, int], k: int,
+          rng: random.Random, first_avoid: str | None = None) -> list[dict]:
+    """Up to k rows, each from the generator with the fewest picks so far (ties by name)."""
+    remaining = {g: sorted(rows, key=lambda x: x["id"]) for g, rows in by_gen.items() if rows}
+    picked: list[dict] = []
+    for i in range(k):
+        avail = sorted(g for g in remaining if remaining[g])
+        if not avail:
+            break
+        pool = avail
+        if i == 0 and first_avoid is not None:
+            pool = [g for g in avail if g != first_avoid] or avail
+        g = min(pool, key=lambda x: (counts[x], x))
+        rows = remaining[g]
+        # choice(range(n)) draws exactly like choice(rows); popping keeps rows unique.
+        picked.append(rows.pop(rng.choice(range(len(rows)))))
+        counts[g] += 1
+    return picked
+
+
 def select_rows(
     gen_rows: list[dict],
     problem_meta: dict[str, dict] | None = None,
     max_problems: int = MAX_PROBLEMS,
     seed: int = SEED,
+    per_class: int = 1,
 ) -> tuple[list[dict], dict]:
     """Return (chosen rows with `arm`, stats). Pure function: no I/O."""
     problem_meta = problem_meta or {}
@@ -80,16 +103,15 @@ def select_rows(
     n_correct = dict.fromkeys(gens, 0)
     n_wrong = dict.fromkeys(gens, 0)
     out: list[dict] = []
+    n_short = 0
     for pid in chosen_problems:
         d = by_problem[pid]
-        cg = min(sorted(d[1]), key=lambda g: (n_correct[g], g))
-        wrong_gens = sorted(d[0])
-        pool = [g for g in wrong_gens if g != cg] or wrong_gens
-        wg = min(pool, key=lambda g: (n_wrong[g], g))
-        n_correct[cg] += 1
-        n_wrong[wg] += 1
-        for g, o in ((cg, 1), (wg, 0)):
-            r = dict(rng.choice(sorted(d[o][g], key=lambda x: x["id"])))
+        correct = _take(d[1], n_correct, per_class, rng)
+        wrong = _take(d[0], n_wrong, per_class, rng, first_avoid=correct[0]["generator"])
+        if len(correct) < per_class or len(wrong) < per_class:
+            n_short += 1
+        for r in correct + wrong:
+            r = dict(r)
             r["arm"] = "B"
             out.append(r)
 
@@ -102,7 +124,9 @@ def select_rows(
         "n_chosen_problems": len(chosen_problems),
         "chosen_by_source": dict(sorted(Counter(
             problem_meta.get(p, {}).get("source", "unknown") for p in chosen_problems).items())),
+        "per_class": per_class,
         "n_chosen_rows": len(out),
+        "n_problems_short_of_per_class": n_short,
         "correct_by_generator": dict(sorted(n_correct.items())),
         "wrong_by_generator": dict(sorted(n_wrong.items())),
     }
@@ -116,7 +140,9 @@ def print_stats(stats: dict) -> None:
         f"{k}={v}" for k, v in stats["mixed_by_source"].items()))
     print(f"[select] chosen problems {stats['n_chosen_problems']}: " + "  ".join(
         f"{k}={v}" for k, v in stats["chosen_by_source"].items()))
-    print(f"[select] chosen solutions {stats['n_chosen_rows']}")
+    print(f"[select] chosen solutions {stats['n_chosen_rows']} "
+          f"(per-class {stats['per_class']}, short of it on "
+          f"{stats['n_problems_short_of_per_class']} problems)")
     for g in stats["correct_by_generator"]:
         print(f"[select]   {g}: correct={stats['correct_by_generator'][g]} "
               f"wrong={stats['wrong_by_generator'][g]}")
@@ -128,6 +154,7 @@ def run(
     out_path: str,
     max_problems: int = MAX_PROBLEMS,
     seed: int = SEED,
+    per_class: int = 1,
 ) -> dict:
     rows: list[dict] = []
     for g in gen_globs:
@@ -137,7 +164,8 @@ def run(
     for p in problems_paths:
         for r in load_jsonl(p):
             meta[r["problem_id"]] = {"source": r.get("source"), "level": r.get("level")}
-    chosen, stats = select_rows(rows, meta, max_problems=max_problems, seed=seed)
+    chosen, stats = select_rows(rows, meta, max_problems=max_problems, seed=seed,
+                                per_class=per_class)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     write_jsonl(out_path, chosen)
     print_stats(stats)
@@ -154,8 +182,10 @@ def main() -> None:
     ap.add_argument("--out", default="data/gen/selected.jsonl")
     ap.add_argument("--max-problems", type=int, default=MAX_PROBLEMS)
     ap.add_argument("--seed", type=int, default=SEED)
+    ap.add_argument("--per-class", type=int, default=1,
+                    help="solutions per class per problem (1 = the original 1+1)")
     args = ap.parse_args()
-    run(args.gen, args.problems, args.out, args.max_problems, args.seed)
+    run(args.gen, args.problems, args.out, args.max_problems, args.seed, args.per_class)
 
 
 if __name__ == "__main__":

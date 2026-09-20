@@ -121,3 +121,59 @@ def test_unknown_problems_still_selected_last():
     chosen, stats = select_rows(rows, m, max_problems=1)
     assert stats["mixed_by_source"] == {"math": 1, "unknown": 1}
     assert {r["problem_id"] for r in chosen} == {"m0"}
+
+
+def rich_problem(pid, gens=("a", "b"), n_correct=2, n_wrong=2):
+    """n_correct + n_wrong eligible solutions per generator."""
+    rows = []
+    for g in gens:
+        for k in range(n_correct):
+            rows.append(grow(pid, g, k, 1))
+        for k in range(n_wrong):
+            rows.append(grow(pid, g, 100 + k, 0))
+    return rows
+
+
+def test_per_class_one_is_the_default():
+    rows = rich_problem("p1") + rich_problem("p2")
+    assert select_rows(rows, meta(["p1", "p2"])) == select_rows(
+        rows, meta(["p1", "p2"]), per_class=1)
+
+
+def test_per_class_two_takes_two_of_each_without_repeats():
+    pids = [f"p{i}" for i in range(4)]
+    rows = [r for p in pids for r in rich_problem(p)]
+    chosen, stats = select_rows(rows, meta(pids), per_class=2)
+    assert stats["per_class"] == 2
+    assert stats["n_chosen_rows"] == len(chosen) == 4 * 4      # 2+2 per problem
+    assert stats["n_problems_short_of_per_class"] == 0
+    assert len({r["id"] for r in chosen}) == len(chosen)       # never the same row twice
+    for p in pids:
+        got = [r for r in chosen if r["problem_id"] == p]
+        assert sorted(r["outcome"] for r in got) == [0, 0, 1, 1]
+        # both generators are used for each class of each problem (they have equal supply)
+        assert {r["generator"] for r in got if r["outcome"] == 1} == {"a", "b"}
+        assert {r["generator"] for r in got if r["outcome"] == 0} == {"a", "b"}
+    assert stats["correct_by_generator"] == {"a": 4, "b": 4}
+    assert stats["wrong_by_generator"] == {"a": 4, "b": 4}
+
+
+def test_per_class_two_falls_back_when_a_class_is_short():
+    """A problem with a single correct solution still contributes it (mixed, 1 + 2)."""
+    rows = [grow("p1", "a", 0, 1)] + [grow("p1", g, 100 + k, 0)
+                                      for g in ("a", "b") for k in range(2)]
+    chosen, stats = select_rows(rows, meta(["p1"]), per_class=2)
+    assert [r["outcome"] for r in chosen] == [1, 0, 0]
+    assert stats["n_chosen_rows"] == 3
+    assert stats["n_problems_short_of_per_class"] == 1
+    # the first wrong pick still prefers the other generator
+    assert chosen[1]["generator"] == "b"
+    assert len({r["id"] for r in chosen}) == 3
+
+
+def test_per_class_larger_than_supply_is_capped():
+    rows = rich_problem("p1", n_correct=1, n_wrong=1)          # one of each per generator
+    chosen, stats = select_rows(rows, meta(["p1"]), per_class=5)
+    assert stats["n_chosen_rows"] == 4                          # 2 correct + 2 wrong exist
+    assert sorted(r["outcome"] for r in chosen) == [0, 0, 1, 1]
+    assert stats["n_problems_short_of_per_class"] == 1
