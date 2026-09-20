@@ -1,4 +1,6 @@
 """§4.5 training-set assembly: nesting, 1:1 balance, A+B halves."""
+import pytest
+
 from koprm.trainsets import build_trainsets, order_pool, split_counts, summarize, take
 
 SIZES = {"s": 10, "m": 20, "l": 40}
@@ -106,3 +108,35 @@ def test_summary_table_rows():
     by_name = {r["set"]: r for r in s}
     assert by_name["AB_s"]["arms"] == "A+B"
     assert by_name["A_s"]["n"] == 10 and by_name["A_s"]["correct"] == 5
+
+
+def test_parse_sizes_and_arms():
+    from koprm.trainsets import parse_arms, parse_sizes
+
+    assert parse_sizes("3k,6k,12k") == {"3k": 3000, "6k": 6000, "12k": 12000}
+    assert parse_sizes("12k, 24K ,48000") == {"12k": 12000, "24K": 24000, "48000": 48000}
+    assert list(parse_sizes("48k,12k")) == ["48k", "12k"]      # order is kept
+    for bad in ("", "0k", "-3k", "3kk", "abc", ","):
+        with pytest.raises(ValueError):
+            parse_sizes(bad)
+
+    assert parse_arms("A,B") == ["A", "B"]
+    assert parse_arms("b") == ["B"]
+    for bad in ("", "C", "A,C"):
+        with pytest.raises(ValueError):
+            parse_arms(bad)
+
+
+def test_custom_sizes_stay_nested():
+    from koprm.trainsets import parse_sizes
+
+    b_pool = pool("B", 120, 120)
+    sizes = parse_sizes("40,80")
+    sets = build_trainsets({"B": b_pool}, sizes=sizes)
+    assert sorted(sets) == ["B_40", "B_80"]                    # B only, tags as written
+    assert len(sets["B_40"]) == 40 and len(sets["B_80"]) == 80
+    small, big = ids(sets["B_40"]), ids(sets["B_80"])
+    assert small < big                                          # 40 nests inside 80
+    for name in ("B_40", "B_80"):
+        n_c = sum(1 for r in sets[name] if r["outcome"] == 1)
+        assert n_c == len(sets[name]) // 2                      # still 1:1

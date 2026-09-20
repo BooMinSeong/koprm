@@ -1,5 +1,9 @@
 """§4.5 Training sets: A, B and A+B at 3k / 6k / 12k solutions, nested.
 
+--sizes and --arms move those defaults: `--sizes 12k,24k,48k --arms B` builds only the
+B sets at the new sizes, leaving the existing files alone (the names are `<arm>_<tag>`
+with the tag exactly as written).
+
 Each pool (A = PRM800K in Korean with human labels, B = on-policy Korean with kernel
 labels) is shuffled once per outcome class with a fixed seed; a set of size n is the
 prefix of each class, so 3k is a subset of 6k is a subset of 12k by construction. The
@@ -8,6 +12,7 @@ one class runs out the other fills the rest. A+B takes half of each size from ea
 each half balanced the same way.
 
     python -m koprm.trainsets --a data/labels/A.jsonl --b data/labels/B.jsonl
+    python -m koprm.trainsets --b data/labels/B.jsonl --arms B --sizes 12k,24k,48k
 """
 from __future__ import annotations
 
@@ -22,6 +27,30 @@ SEED = 20260920
 SIZES = {"3k": 3000, "6k": 6000, "12k": 12000}
 REQUIRED = ("problem_id", "problem_ko", "solution_steps", "step_labels", "outcome", "arm",
             "generator")
+
+
+def parse_sizes(spec: str) -> dict[str, int]:
+    """"3k,6k,12k" or "3000,12k" -> {tag: n}, keeping the tags as written and in order."""
+    out: dict[str, int] = {}
+    for item in (x.strip() for x in spec.split(",")):
+        if not item:
+            continue
+        body = item[:-1] if item[-1].lower() == "k" else item
+        mult = 1000 if item[-1].lower() == "k" else 1
+        if not body.isdigit() or int(body) <= 0:
+            raise ValueError(f"bad size {item!r} (use 12k or 12000)")
+        out[item] = int(body) * mult
+    if not out:
+        raise ValueError("no sizes given")
+    return out
+
+
+def parse_arms(spec: str) -> list[str]:
+    arms = [a.strip().upper() for a in spec.split(",") if a.strip()]
+    bad = [a for a in arms if a not in ("A", "B")]
+    if bad or not arms:
+        raise ValueError(f"bad arms {spec!r} (use A, B or A,B)")
+    return arms
 
 
 def row_key(r: dict, i: int = 0) -> str:
@@ -119,10 +148,21 @@ def main() -> None:
     ap.add_argument("--b", default=str(LABELS / "B.jsonl"))
     ap.add_argument("--out-dir", default=str(TRAINSETS))
     ap.add_argument("--seed", type=int, default=SEED)
+    ap.add_argument("--sizes", default=",".join(SIZES),
+                    help="comma list of sizes, each <n>k or a plain integer")
+    ap.add_argument("--arms", default="A,B", help="comma list: A, B or A,B")
     args = ap.parse_args()
+
+    try:
+        sizes = parse_sizes(args.sizes)
+        arms = parse_arms(args.arms)
+    except ValueError as e:
+        raise SystemExit(str(e)) from e
 
     pools = {}
     for arm, path in (("A", args.a), ("B", args.b)):
+        if arm not in arms:
+            continue
         if path and Path(path).exists():
             pools[arm] = load_jsonl(path)
             check_rows(pools[arm], arm)
@@ -134,12 +174,12 @@ def main() -> None:
     if not pools:
         raise SystemExit("no label pools found")
 
-    sets = build_trainsets(pools, seed=args.seed)
+    sets = build_trainsets(pools, sizes=sizes, seed=args.seed)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, rows in sets.items():
         write_jsonl(out_dir / f"{name}.jsonl", rows)
-    print_table(summarize(sets, SIZES))
+    print_table(summarize(sets, sizes))
     print(f"[trainsets] wrote {len(sets)} files -> {out_dir}")
 
 
