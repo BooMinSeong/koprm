@@ -1,10 +1,12 @@
-# 인수인계 — §5 전 단계 완료 (2026-09-20)
+# 인수인계 — §5 전 단계 완료 (2026-09-20) + 확장 실험 (2026-09-21)
 
-분할부터 KO MATH500 재채점까지 §5의 전 단계를 실행했다. 결과와 판정은 `Plan.md` §15에, 모든 표는 `data/reports/results.md`에 있다. 새 세션은 이 문서와 `Plan.md`(§15 결과, §13.0·§13.1 결정 기록)를 읽고 "다음 세션이 할 일"부터 이어 간다. 코드 작성은 Opus 에이전트에 맡기고 메인 세션은 판단·검토·실행 결정을 맡는다(사용자 지침).
+분할부터 KO MATH500 재채점까지 §5의 전 단계를 실행했고(2026-09-20), 이어서 집계 방식·데이터 확장(4.8만)·3B 백본·소프트+y의 확장 실험을 돌렸다(2026-09-21). 결과와 판정은 `Plan.md` §15(확장 실험은 §15.7)에, 모든 표는 `data/reports/results.md`에 있다. 새 세션은 이 문서와 `Plan.md`(§15 결과, §13.0·§13.1 결정 기록)를 읽고 "다음 세션이 할 일"부터 이어 간다. 코드 작성은 Opus 에이전트에 맡기고 메인 세션은 판단·검토·실행 결정을 맡는다(사용자 지침).
 
 ## 핵심 결과 (자세한 내용은 Plan §15)
 
 세 가지 사전 등록 비교(§1) 중 "같은 크기에서 B ≥ A"는 성립하고(차이가 0을 포함), "A+B가 둘 이상"은 3k·6k의 naive@16에서만 유의하며, 학습 곡선은 6천에서 1.2만 사이가 평평해 §1의 두 번째 증거는 성립하지 않는다. 이번 실행의 주 발견은 절제다. KO MATH500·EXAONE naive@64에서 현행(영어 PRM 직접) 0.664, 커널 하드 라벨 B_12k 0.520, 교사 소프트 타깃 0.692, 결과 항만 쓴 학생 0.740이다. 결과 항만 쓴 학생이 모든 지표에서 현행을 넘고 n=64에서 꺾이지 않는 유일한 학생이며, 같은 순서가 Qwen2.5-3B와 홀드아웃 Qwen2.5-1.5B에서도 나온다. 번역 다리를 건넌 교사(72B, min, n=16)는 naive@16 0.762로 현행 0.670보다 높아, 다리가 아니라 학생과 라벨 형식이 병목이다.
+
+확장 실험(§15.7)에서 그 병목을 라벨 형식과 데이터 양으로 풀었다. B 풀을 4.8만 풀이로 늘리자 KO MATH500·EXAONE에서 교사 소프트가 naive@64 0.744, 결과 항만이 weighted@64 0.780으로 현행(0.664 / 0.718)을 크게 넘는다. 두 형식 모두 24k→48k에서 통계적으로 유의하게 올라 아직 포화하지 않았다. 하드 커널 라벨은 데이터를 네 배로 늘려도, 집계를 바꿔도 회복되지 않는다. Qwen2.5-3B 백본은 같은 초매개변수에서 1.2B보다 모든 라벨 형식에서 나빴고, 소프트+y는 소프트를 넘지 못했다.
 
 ## 산출물 위치
 
@@ -13,14 +15,20 @@ data/splits/      dev, train_pool, math500, prm800k_audit, prm800k_A_pool
 data/trans/       문제·스텝 번역 (problems_ko, selected.steps_en, prm800k_A.steps_ko,
                   audit.steps_ko, audit.steps_en_rt, math500_exaone16.steps_en)
 data/gen/         생성 결과와 y 채점, selected.jsonl
+                  확장: train_*_n6*(생성기당 6표본 추가), selected_big*.jsonl
 data/teacher/     72B 로그 오즈 (B, 감사 rt/direct, MATH500 참조선)
-data/labels/      A.jsonl, B.jsonl, B.refs.json, audit_rows.jsonl
-data/trainsets/   {A,B,AB}_{3k,6k,12k}.jsonl
-data/ckpt/<run>/epoch{1,2,3}   학습 11회 × 3에폭
-data/eval/dev/, data/eval/math500/, data/eval/selection.json, data/eval/cache/
+data/labels/      A.jsonl, B.jsonl, B.refs.json, audit_rows.jsonl, B_big.jsonl(4.8만)
+data/trainsets/   {A,B,AB}_{3k,6k,12k}.jsonl, big/B_{12k,24k,48k}.jsonl
+data/ckpt/<run>/epoch{1,2,3}   원래 11회 + B_12k_soft_y + big_B_{12,24,48}k{,_soft,_soft_y,
+                  _outcome} + q3b_*(3B 백본)
+data/eval/dev/, math500/, selection.json, cache/
+data/eval/dev_big/, math500_big/   4.8만 계열
+data/eval/dev3b/, math500_3b/      3B 백본
+data/eval/agg/    원래 체크포인트의 네 집계(last/min/prod/mean)
 data/reports/results.md, results.json, audit.json, student_audit_<run>.json
 logs/*.sh         단계별 드라이버(gen_all, translate_*, teacher_*, labels, train_all,
-                  post_eval, final_eval, reference_line)와 그 로그
+                  post_eval, final_eval, reference_line)와 확장용 scale_stage*.sh,
+                  train_3b.sh, train_softy.sh, 그리고 그 로그
 ```
 
 `data/reports/`만 커밋한다. 나머지 `data/`와 `logs/`는 커밋하지 않는다.
@@ -52,18 +60,22 @@ vLLM 0.29.0 + transformers 5.17 + torch 2.13의 단일 venv(`.venv`)를 쓴다. 
 koprm/data/sources.py, splits.py      MATH·GSM8K·KO MATH500 로드, dev/train 풀 분할 (§4.1)
 koprm/data/prm800k.py, prm800k_sets.py PRM800K phase2 파싱, 감사 세트(오답500+정답500)·A 풀 (§4.3, §4.4)
 koprm/gen/generate.py, outcome.py     vLLM 한국어 생성(komath 프롬프트), math_verify 병렬 y 채점
+                                      `--sample-offset N`으로 2차 생성의 id 충돌을 막는다
 koprm/translate/mask.py, translate.py 마스킹/복원, 단일 번역기, 재개 가능 jsonl
 koprm/teacher/score.py                교사 로그 오즈 (§2.2)
 koprm/label/kernel.py, build.py, audit.py  기준 분포·커널 (§2.3–2.4), 라벨 조립, 감사 보고
-koprm/select.py, trainsets.py         §4.2 선택, §4.5 학습 세트(3k⊂6k⊂12k, A/B/A+B)
+koprm/select.py, trainsets.py         §4.2 선택(`--per-class K`), §4.5 학습 세트
+                                      (`--sizes 12k,24k,48k --arms B`로 새 크기만 만든다)
 koprm/train/{model,data,loss,train}.py 학생 모델·손실(§6.1)·학습 루프
+                                      라벨 형식: `--soft` / `--soft-y` / `--outcome-only`(배타)
 koprm/eval/{scorer,bon}.py            학생 채점기, BoN 재채점 평가(naive/weighted/maj, 부트스트랩)
+                                      `--agg all`(last/min/prod/mean), `--save-scores`/`--scores-from`
 koprm/prep.py                         단계 사이의 입력 jsonl 조립(problems-in/ko, teacher-in 등)
 koprm/report.py                       §7 보고 항목 조립(results.md/json), 교사 참조선, 학생 첫 오류 감사
 scripts/check_teacher.py, check_student.py  1일차 점검
 ```
 
-테스트: `.venv/bin/python -m pytest tests -q` (121개 통과해야 함).
+테스트: `.venv/bin/python -m pytest tests -q` (137개 통과해야 함).
 
 ## 재현 순서 (새 서버에서 처음부터 돌릴 때)
 
@@ -76,10 +88,11 @@ scripts/check_teacher.py, check_student.py  1일차 점검
 
 ## 다음 세션이 할 일
 
-1. 라벨 형식을 정한다. 결과 항만 또는 소프트 타깃 B를 기본 팔로 삼는 것이 이번 실행에서 가장 강한 구성이다(Plan §15.2).
-2. Plan §12.1의 한 점 MC로 마스크된 70%의 스텝을 채운다.
-3. Plan §12.2의 영어 PRM 체크포인트 초기화로 학생의 출발점을 올린다.
-4. 학생의 첫 오류 감사를 한국어 문제 텍스트로 다시 잰다(이번 수치는 영어 문제 조건이라 불리하다).
+기본 팔은 교사 소프트(집계 mean 또는 last) 또는 결과 항만이다. 하드 커널 라벨은 대체되었다(Plan §15.7e).
+
+1. 9.6만 지점을 찍는다. 남은 2.8만 풀에 표본을 더해 `--per-class`를 올려 뽑고, 소프트와 결과 항만 두 형식만 학습한다.
+2. 더 큰 학생을 시도한다. EXAONE 계열의 큰 백본이나 Plan §12.2의 7B PRM 초기화. 같은 초매개변수로 그냥 3B에 얹는 것은 실패했으므로(§15.7c) FSDP나 ZeRO 분할과 초매개변수 재조정이 먼저다.
+3. 소프트 학생에 대해 한국어 문제 텍스트로 첫 오류 감사를 다시 잰다. 스텝 단위의 값어치를 BoN 밖에서 재는 유일한 지표다.
 
 무엇을 할지는 사용자가 정한다. 그리고 이 서버에는 자격 증명이 없어 GitHub push가 밀려 있다. 커밋은 로컬에만 있으므로 다음 세션에서 `main`으로 push한다.
 
