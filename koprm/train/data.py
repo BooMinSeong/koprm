@@ -6,7 +6,7 @@ Input jsonl rows (extra fields are ignored):
      "solution_steps": [str, ...],
      "step_labels": [1 | 0 | null, ...],     # same length as solution_steps
      "outcome": 0 | 1,
-     "teacher_logodds": [float, ...]}        # optional, only for the --soft ablation
+     "teacher_logodds": [float, ...]}        # optional, only for the soft ablations
 
 Per example we keep the SEP positions and one target per step:
 
@@ -15,6 +15,16 @@ Per example we keep the SEP positions and one target per step:
 
 Truncation: the sequence is cut from the right at `max_len`; examples whose SEP
 positions would be cut are dropped (the count is reported, not silently hidden).
+
+`soft_mode` picks the step targets of the soft ablations (loss.py is not involved):
+
+    None      hard step labels only
+    "soft"    sigma(teacher_logodds[t]) for every step (NaN where the teacher is missing,
+              which the loss masks out)
+    "soft_y"  the same, except that a y=1 solution gets 1.0 everywhere: by §2.1 every
+              prefix of a correct solution can still reach the answer, so the outcome
+              overrides the teacher. y=0 rows are identical to "soft", and their last step
+              is still 0 through the outcome term.
 """
 from __future__ import annotations
 
@@ -29,6 +39,8 @@ from koprm.io import read_jsonl
 from koprm.paths import SYSTEM_PROMPT_KO
 from koprm.train.loss import IGNORE_INDEX
 from koprm.train.model import encode_example
+
+SOFT_MODES = (None, "soft", "soft_y")
 
 
 @dataclass
@@ -79,8 +91,10 @@ def build_example(
     max_len: int = 2048,
     system_prompt: str = SYSTEM_PROMPT_KO,
     stats: BuildStats | None = None,
-    with_soft: bool = False,
+    soft_mode: str | None = None,
 ) -> Example | None:
+    if soft_mode not in SOFT_MODES:
+        raise ValueError(f"unknown soft_mode {soft_mode!r} (use {SOFT_MODES})")
     stats = stats or BuildStats()
     steps = [s for s in (row.get("solution_steps") or []) if str(s).strip()]
     if not steps:
@@ -107,7 +121,9 @@ def build_example(
 
     targets = row_targets(labels, int(row["outcome"]))
     soft = None
-    if with_soft:
+    if soft_mode == "soft_y" and int(row["outcome"]) == 1:
+        soft = [1.0] * len(steps)  # §2.1: y=1 proves every prefix, whatever the teacher says
+    elif soft_mode:
         z = row.get("teacher_logodds")
         if z is not None and len(z) == len(steps):
             soft = [1.0 / (1.0 + math.exp(-float(v))) for v in z]
@@ -141,7 +157,7 @@ def build_dataset(
     max_len: int = 2048,
     limit: int | None = None,
     system_prompt: str = SYSTEM_PROMPT_KO,
-    with_soft: bool = False,
+    soft_mode: str | None = None,
     verbose: bool = True,
 ) -> tuple[StepPRMDataset, BuildStats]:
     rows = (list(read_jsonl(path_or_rows))
@@ -153,7 +169,7 @@ def build_dataset(
     out: list[Example] = []
     for r in rows:
         ex = build_example(tokenizer, sep_token, r, max_len=max_len,
-                           system_prompt=system_prompt, stats=stats, with_soft=with_soft)
+                           system_prompt=system_prompt, stats=stats, soft_mode=soft_mode)
         if ex is not None:
             out.append(ex)
     if verbose:
@@ -164,9 +180,9 @@ def build_dataset(
 class Collator:
     """Pads on the right; SEP positions and targets are padded to the longest solution."""
 
-    def __init__(self, pad_id: int, with_soft: bool = False):
+    def __init__(self, pad_id: int, soft_mode: str | None = None):
         self.pad_id = int(pad_id)
-        self.with_soft = with_soft
+        self.soft_mode = soft_mode
 
     def __call__(self, batch: list[Example]) -> dict:
         L = max(len(e.input_ids) for e in batch)
@@ -188,7 +204,7 @@ class Collator:
             step_mask[b, :k] = True
             targets[b, :k] = torch.tensor(e.targets, dtype=torch.long)
             n_steps[b] = k
-            if self.with_soft and e.soft_targets is not None:
+            if self.soft_mode and e.soft_targets is not None:
                 soft[b, :k] = torch.tensor(e.soft_targets, dtype=torch.float32)
         out = {
             "input_ids": input_ids,
@@ -198,6 +214,6 @@ class Collator:
             "targets": targets,
             "n_steps": n_steps,
         }
-        if self.with_soft:
+        if self.soft_mode:
             out["soft_targets"] = soft
         return out

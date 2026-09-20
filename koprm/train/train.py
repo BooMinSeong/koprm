@@ -2,8 +2,10 @@
 
 lr 1e-5, warmup 3%, cosine decay, effective batch 64 solutions (gradient
 accumulation), max length 2048, bf16 autocast on GPU, 3 epochs, grad clip 1.0.
-The same values are used for all 11 runs; only --train / --out / the two
-ablation flags change.
+The same values are used for every run; only --train / --out and the ablation flag
+change. The label-form variants are: none (hard kernel/human labels), --soft (teacher
+sigma(z) as the step target), --soft-y (the same, but a y=1 solution is 1.0 everywhere,
+§2.1) and --outcome-only (no step term at all). They are mutually exclusive.
 
 Smoke test (CPU, no GPU needed):
 
@@ -63,16 +65,17 @@ def train(args: argparse.Namespace) -> dict:
     print(f"[train] backbone={args.backbone} sep={model.sep_token!r} id={model.sep_id} "
           f"dtype={dtype} device={device}")
 
+    soft_mode = "soft_y" if args.soft_y else ("soft" if args.soft else None)
     ds, stats = build_dataset(args.train, model.tokenizer, model.sep_token,
                               max_len=args.max_len, limit=args.limit,
-                              with_soft=args.soft)
+                              soft_mode=soft_mode)
     if len(ds) == 0:
         raise SystemExit("no usable training examples")
 
     pad_id = model.tokenizer.pad_token_id
     if pad_id is None:
         pad_id = model.tokenizer.eos_token_id or 0
-    collate = Collator(pad_id=pad_id, with_soft=args.soft)
+    collate = Collator(pad_id=pad_id, soft_mode=soft_mode)
     g = torch.Generator()
     g.manual_seed(args.seed)
     dl = DataLoader(ds, batch_size=args.micro_batch, shuffle=True, collate_fn=collate,
@@ -90,7 +93,8 @@ def train(args: argparse.Namespace) -> dict:
 
     log_path = out_dir / "train_log.jsonl"
     (out_dir / "run_config.json").write_text(
-        json.dumps({**vars(args), "accum": accum, "effective_batch": accum * args.micro_batch,
+        json.dumps({**vars(args), "soft_mode": soft_mode, "accum": accum,
+                    "effective_batch": accum * args.micro_batch,
                     "total_opt_steps": total_opt_steps, "n_examples": len(ds),
                     "data_stats": stats.as_dict()}, ensure_ascii=False, indent=2),
         encoding="utf-8")
@@ -159,8 +163,12 @@ def main() -> None:
     ap.add_argument("--warmup-ratio", type=float, default=0.03)
     ap.add_argument("--clip", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--soft", action="store_true", help="ablation: soft teacher targets")
-    ap.add_argument("--outcome-only", action="store_true", help="ablation: outcome term only")
+    variant = ap.add_mutually_exclusive_group()
+    variant.add_argument("--soft", action="store_true", help="ablation: soft teacher targets")
+    variant.add_argument("--soft-y", action="store_true",
+                         help="ablation: soft teacher targets, but 1.0 everywhere when y=1")
+    variant.add_argument("--outcome-only", action="store_true",
+                         help="ablation: outcome term only")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--no-bf16", action="store_true")
     ap.add_argument("--grad-ckpt", action="store_true")

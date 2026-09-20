@@ -1,6 +1,7 @@
 """train/data.py on a stub tokenizer (no model download, no network)."""
 import math
 
+import pytest
 import torch
 
 from koprm.train.data import BuildStats, Collator, build_dataset, build_example, row_targets
@@ -81,12 +82,13 @@ def test_build_dataset_stats_and_soft_targets():
         _row(["ab"], [1], outcome=1),          # no teacher_logodds -> NaN
         _row(["ab", "cd"], [1], outcome=1),    # dropped
     ]
-    ds, stats = build_dataset(rows, tok, SEP, max_len=2048, with_soft=True, verbose=False)
+    ds, stats = build_dataset(rows, tok, SEP, max_len=2048, soft_mode="soft",
+                              verbose=False)
     assert (stats.n_rows, stats.n_kept, stats.n_label_len_mismatch) == (3, 2, 1)
     assert ds.examples[0].soft_targets[0] > 0.88
     assert all(math.isnan(v) for v in ds.examples[1].soft_targets)
 
-    batch = Collator(pad_id=0, with_soft=True)(list(ds.examples))
+    batch = Collator(pad_id=0, soft_mode="soft")(list(ds.examples))
     assert batch["input_ids"].shape == (2, 12)
     assert batch["n_steps"].tolist() == [2, 1]
     assert batch["step_mask"].tolist() == [[True, True], [True, False]]
@@ -111,3 +113,45 @@ def test_encode_example_accepts_a_batchencoding():
     assert ids == encode_example(FakeTok(), "문제", ["가나다", "라마"], SEP)[0]
     assert pos == [len(PREFIX) + 3, len(PREFIX) + 3 + 1 + 2]  # the two SEP positions
     assert all(ids[p] == 7 for p in pos)
+
+
+def test_soft_y_overrides_the_teacher_on_correct_solutions():
+    """§2.1: y=1 proves every prefix, so soft_y targets are 1.0 there; y=0 is unchanged."""
+    tok = FakeTok()
+    correct = _row(["ab", "cd"], [1, 1], outcome=1, z=[2.0, -2.0])
+    wrong = _row(["ab", "cd"], [1, 0], outcome=0, z=[2.0, -2.0])
+
+    soft_c = build_example(tok, SEP, correct, soft_mode="soft").soft_targets
+    soft_y_c = build_example(tok, SEP, correct, soft_mode="soft_y").soft_targets
+    assert soft_c[0] == pytest.approx(1 / (1 + math.exp(-2.0)))
+    assert soft_c[1] == pytest.approx(1 / (1 + math.exp(2.0)))
+    assert soft_y_c == [1.0, 1.0]
+
+    # a y=0 row is identical under both modes, and its last target stays the outcome
+    ex_soft = build_example(tok, SEP, wrong, soft_mode="soft")
+    ex_soft_y = build_example(tok, SEP, wrong, soft_mode="soft_y")
+    assert ex_soft.soft_targets == ex_soft_y.soft_targets == pytest.approx(soft_c)
+    assert ex_soft_y.targets[-1] == 0
+
+    # y=1 needs no teacher under soft_y (plain soft has to fall back to NaN)
+    no_teacher = _row(["ab", "cd"], [1, 1], outcome=1)
+    assert build_example(tok, SEP, no_teacher, soft_mode="soft_y").soft_targets == [1.0, 1.0]
+    assert all(math.isnan(v) for v in
+               build_example(tok, SEP, no_teacher, soft_mode="soft").soft_targets)
+
+    # hard mode keeps no soft targets at all, and an unknown mode is a programming error
+    assert build_example(tok, SEP, correct).soft_targets is None
+    with pytest.raises(ValueError):
+        build_example(tok, SEP, correct, soft_mode="softish")
+
+
+def test_collator_emits_soft_targets_for_soft_y():
+    tok = FakeTok()
+    rows = [_row(["ab", "cd"], [1, 1], outcome=1, z=[2.0, -2.0]),
+            _row(["ab"], [0], outcome=0, z=[-2.0])]
+    ds, _ = build_dataset(rows, tok, SEP, soft_mode="soft_y", verbose=False)
+    batch = Collator(pad_id=0, soft_mode="soft_y")(list(ds.examples))
+    assert batch["soft_targets"][0].tolist()[:2] == [1.0, 1.0]
+    assert batch["soft_targets"][1, 0].item() == pytest.approx(1 / (1 + math.exp(2.0)))
+    assert torch.isnan(batch["soft_targets"][1, 1])            # padding stays NaN
+    assert "soft_targets" not in Collator(pad_id=0)(list(ds.examples))
