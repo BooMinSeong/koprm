@@ -9,8 +9,9 @@ Two inputs:
 
 Steps are `completion.split("\\n\\n")` (empties dropped), the same convention the
 komath harness uses.  Completions are rescored with a StudentScorer (or the
-stored `scores` are reused with --use-existing-scores), aggregated per solution
-with last (default) or min (§7), and BoN metrics are computed for
+stored `scores` are reused with --use-existing-scores, or a saved score file is read
+with --scores-from), aggregated per solution with last / min (§7) or the auxiliary
+prod / mean, and BoN metrics are computed for
 n = 1, 2, 4, ..., 64 over the *first n* completions - the komath
 `subsample_completions` convention, which keeps the comparison at small n valid.
 
@@ -24,9 +25,11 @@ evaluated on the same rows (--no-cache bypasses it).
     python -m koprm.eval.bon --dataset ENSEONG/ko-ko-math-500-test-EXAONE-4.0-1.2B-bon \\
         --use-existing-scores --limit 20 --out /tmp/bon.json
 
---agg both (the default) runs both aggregations off the one rescoring pass and writes
-{"last": {...}, "min": {...}, "source": ..., "scorer": ...}; --agg last|min keeps the flat
-single-aggregation JSON.
+--agg both (the default) runs last and min off the one rescoring pass and writes
+{"last": {...}, "min": {...}, "source": ..., "scorer": ...}; --agg all adds prod and mean in
+that order; a single --agg last|min|prod|mean keeps the flat single-aggregation JSON.
+--save-scores writes the per-step probabilities as jsonl ({problem_id, answer, scores}), and
+--scores-from reads such a file back, so any aggregation can be recomputed without the model.
 """
 from __future__ import annotations
 
@@ -39,6 +42,7 @@ from pathlib import Path
 import numpy as np
 
 from koprm.data.sources import last_boxed
+from koprm.io import load_jsonl, write_jsonl
 from koprm.paths import EVAL
 from koprm.verify import answers_equal
 
@@ -57,7 +61,14 @@ def aggregate(scores: list[float], agg: str = "last") -> float:
         return float(scores[-1])
     if agg == "min":
         return float(min(scores))
-    raise ValueError(f"unknown aggregation {agg!r} (use last|min)")
+    if agg == "prod":
+        return float(np.prod(np.asarray(scores, dtype=np.float64)))
+    if agg == "mean":
+        return float(np.mean(np.asarray(scores, dtype=np.float64)))
+    raise ValueError(f"unknown aggregation {agg!r} (use last|min|prod|mean)")
+
+
+AGG_SETS = {"both": ["last", "min"], "all": ["last", "min", "prod", "mean"]}
 
 
 def n_grid(n_max: int) -> list[int]:
@@ -252,6 +263,38 @@ def rescore(rows: list[dict], scorer, batch_size: int = 8) -> list[list[list[flo
     return out
 
 
+def save_scores(path: str | Path, rows: list[dict],
+                step_scores: list[list[list[float]]]) -> int:
+    """One row per problem, so any aggregation can be recomputed without the model."""
+    out = ({"problem_id": r.get("problem_id"), "answer": r["answer"],
+            "scores": [[float(p) for p in c] for c in s]}
+           for r, s in zip(rows, step_scores))
+    n = write_jsonl(path, out)
+    print(f"[bon] wrote step scores for {n} problems to {path}")
+    return n
+
+
+def load_scores(path: str | Path, rows: list[dict]) -> list[list[list[float]]]:
+    """Read a --save-scores file back, checking it belongs to these rows."""
+    saved = load_jsonl(path)
+    if len(saved) != len(rows):
+        raise SystemExit(f"--scores-from {path}: {len(saved)} rows, but the dataset has "
+                         f"{len(rows)}")
+    out = []
+    for i, (r, sv) in enumerate(zip(rows, saved)):
+        pid, spid = r.get("problem_id"), sv.get("problem_id")
+        if pid is not None and spid is not None and pid != spid:
+            raise SystemExit(f"--scores-from {path}: row {i} is {spid!r}, the dataset has "
+                             f"{pid!r} (different order or dataset)")
+        sc = sv.get("scores")
+        if not isinstance(sc, list) or len(sc) != len(r["completions"]):
+            raise SystemExit(f"--scores-from {path}: row {i} has "
+                             f"{len(sc) if isinstance(sc, list) else 'no'} completions, the "
+                             f"dataset has {len(r['completions'])}")
+        out.append([[float(p) for p in c] for c in sc])
+    return out
+
+
 def existing_scores(rows: list[dict]) -> list[list[list[float]]]:
     out = []
     for r in rows:
@@ -374,14 +417,20 @@ def main() -> None:
     ap.add_argument("--scorer", default="existing",
                     help="checkpoint dir, or 'existing' to reuse the stored scores")
     ap.add_argument("--use-existing-scores", action="store_true")
-    ap.add_argument("--agg", default="both", choices=["both", "last", "min"],
-                    help="'both' scores once and writes {last: ..., min: ...} (§7)")
+    ap.add_argument("--agg", default="both",
+                    choices=["both", "all", "last", "min", "prod", "mean"],
+                    help="'both' = last+min (§7), 'all' = last+min+prod+mean; several "
+                         "aggregations come out of the one scoring pass")
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--max-len", type=int, default=4096)
     ap.add_argument("--timeout", type=float, default=3.0)
+    ap.add_argument("--save-scores", default=None,
+                    help="write the per-step probabilities as jsonl (re-aggregate later)")
+    ap.add_argument("--scores-from", default=None,
+                    help="read a --save-scores file instead of rescoring")
     ap.add_argument("--no-cache", action="store_true",
                     help=f"do not reuse the answer grouping cached under {EVAL / 'cache'}")
     args = ap.parse_args()
@@ -391,7 +440,12 @@ def main() -> None:
     print(f"[bon] {len(rows)} problems, {len(rows[0]['completions'])} completions each")
 
     use_existing = args.use_existing_scores or args.scorer == "existing"
-    if use_existing:
+    if args.scores_from:
+        if args.scorer != "existing":
+            ap.error("--scores-from and --scorer are mutually exclusive")
+        scores = load_scores(args.scores_from, rows)
+        scorer_name = f"scores-from:{Path(args.scores_from).name}"
+    elif use_existing:
         scores = existing_scores(rows)
         scorer_name = "existing"
     else:
@@ -401,7 +455,10 @@ def main() -> None:
         scores = rescore(rows, scorer, batch_size=args.batch_size)
         scorer_name = args.scorer
 
-    aggs = ["last", "min"] if args.agg == "both" else [args.agg]
+    if args.save_scores:
+        save_scores(args.save_scores, rows, scores)
+
+    aggs = AGG_SETS.get(args.agg, [args.agg])
     cache_dir = None if args.no_cache else EVAL / "cache"
     results = {a: evaluate(rows, scores, agg=a, timeout=args.timeout, cache_dir=cache_dir)
                for a in aggs}
