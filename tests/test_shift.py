@@ -197,3 +197,29 @@ def test_student_and_teacher_probability_paths(tmp_path):
 
 def json_rows(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_chat_kwargs_reach_the_template_and_new_generators_exist():
+    from koprm.gen.generate import build_prompts
+    from koprm.paths import GENERATORS
+
+    seen = {}
+
+    class Tok:
+        def apply_chat_template(self, convs, **kw):
+            seen.update(kw)
+            return [f"<{len(convs)}>"]
+
+    out = build_prompts(Tok(), ["p1", "p2"], "sys", {"enable_thinking": False})
+    assert out == ["<2>"]
+    assert seen == {"tokenize": False, "add_generation_prompt": True,
+                    "enable_thinking": False}
+    seen.clear()
+    build_prompts(Tok(), ["p"], "sys")                      # no kwargs -> unchanged call
+    assert seen == {"tokenize": False, "add_generation_prompt": True}
+
+    assert GENERATORS["exaone-32b"] == "LGAI-EXAONE/EXAONE-4.0-32B"
+    assert GENERATORS["qwen3-8b"] == "Qwen/Qwen3-8B"
+    src = Path(__import__("koprm.gen.generate", fromlist=["x"]).__file__).read_text(
+        encoding="utf-8")
+    assert "--chat-kwargs" in src

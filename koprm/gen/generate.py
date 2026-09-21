@@ -9,6 +9,9 @@ A second pass over the same problems (a different --seed, more samples) must not
 those ids: --sample-offset N shifts sample_idx (and therefore the id suffix) by N, so
 pass 2 with --n 2 --sample-offset 2 continues where pass 1 stopped.
 
+Reasoning models (Qwen3, EXAONE-4.0) take a template flag: --chat-kwargs
+'{"enable_thinking": false}' keeps them in the non-reasoning mode.
+
 Sharding: --shard i --num-shards k takes every k-th problem, so several processes
 (one per GPU) can run side by side; output files are per shard and resumable.
 Steps are split on blank lines (§3): the same convention the komath harness uses
@@ -17,6 +20,7 @@ for Qwen-style PRMs.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from koprm.io import load_jsonl, write_jsonl
@@ -28,12 +32,14 @@ def split_steps(text: str) -> list[str]:
     return [s for s in steps if s]
 
 
-def build_prompts(tokenizer, problems: list[str], system_prompt: str = SYSTEM_PROMPT_KO) -> list[str]:
+def build_prompts(tokenizer, problems: list[str], system_prompt: str = SYSTEM_PROMPT_KO,
+                  chat_kwargs: dict | None = None) -> list[str]:
     convs = [
         [{"role": "system", "content": system_prompt}, {"role": "user", "content": p}]
         for p in problems
     ]
-    return tokenizer.apply_chat_template(convs, tokenize=False, add_generation_prompt=True)
+    return tokenizer.apply_chat_template(convs, tokenize=False, add_generation_prompt=True,
+                                         **(chat_kwargs or {}))
 
 
 def generate(
@@ -52,6 +58,7 @@ def generate(
     sample_offset: int = 0,
     problem_field: str = "problem_ko",
     system_prompt: str = SYSTEM_PROMPT_KO,
+    chat_kwargs: dict | None = None,
 ) -> None:
     from vllm import LLM, SamplingParams
 
@@ -74,7 +81,8 @@ def generate(
     print(f"[gen] {generator}: {len(todo)} problems to do ({len(done)} already done) -> {out_path}")
     for b in range(0, len(todo), batch_problems):
         chunk = todo[b : b + batch_problems]
-        prompts = build_prompts(tok, [p[problem_field] for p in chunk], system_prompt)
+        prompts = build_prompts(tok, [p[problem_field] for p in chunk], system_prompt,
+                                chat_kwargs)
         outs = llm.generate(prompts, sp, use_tqdm=True)
         rows = []
         for p, o in zip(chunk, outs):
@@ -105,6 +113,8 @@ def main() -> None:
     ap.add_argument("--problem-field", default="problem_ko",
                     help="problem text field (problem_en for the English MATH500 run)")
     ap.add_argument("--system-prompt", choices=["ko", "en"], default="ko")
+    ap.add_argument("--chat-kwargs", default=None,
+                    help='json passed to apply_chat_template, e.g. \'{"enable_thinking": false}\'')
     ap.add_argument("--sample-offset", type=int, default=0,
                     help="shift sample_idx (and the id suffix) so a second pass cannot collide")
     ap.add_argument("--out", required=True)
@@ -140,6 +150,7 @@ def main() -> None:
         sample_offset=args.sample_offset,
         problem_field=args.problem_field,
         system_prompt=SYSTEM_PROMPTS[args.system_prompt],
+        chat_kwargs=json.loads(args.chat_kwargs) if args.chat_kwargs else None,
     )
 
 

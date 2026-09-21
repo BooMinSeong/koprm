@@ -155,3 +155,88 @@ def test_collator_emits_soft_targets_for_soft_y():
     assert batch["soft_targets"][1, 0].item() == pytest.approx(1 / (1 + math.exp(2.0)))
     assert torch.isnan(batch["soft_targets"][1, 1])            # padding stays NaN
     assert "soft_targets" not in Collator(pad_id=0)(list(ds.examples))
+
+
+# ---------------------------------------------- §12.2 PRM head init / FSDP plumbing
+
+
+def test_load_prm_head_state_maps_score_to_the_head(tmp_path):
+    """score.0/score.2 of Qwen2ForProcessRewardModel are PRMHead.net[0]/net[2]."""
+    import json as _json
+
+    from safetensors.torch import save_file
+
+    from koprm.train.model import PRMHead, load_prm_head_state
+
+    h = 8
+    tensors = {
+        "score.0.weight": torch.arange(h * h, dtype=torch.float32).reshape(h, h),
+        "score.0.bias": torch.ones(h, dtype=torch.float32),
+        "score.2.weight": torch.full((2, h), 0.5, dtype=torch.float32),
+        "score.2.bias": torch.tensor([0.25, -0.25], dtype=torch.float32),
+        "model.embed_tokens.weight": torch.zeros(4, h),
+    }
+    save_file({k: v for k, v in tensors.items() if k.startswith("score")},
+              str(tmp_path / "model-00002-of-00002.safetensors"))
+    save_file({"model.embed_tokens.weight": tensors["model.embed_tokens.weight"]},
+              str(tmp_path / "model-00001-of-00002.safetensors"))
+    (tmp_path / "model.safetensors.index.json").write_text(_json.dumps({
+        "weight_map": {"model.embed_tokens.weight": "model-00001-of-00002.safetensors",
+                       **{k: "model-00002-of-00002.safetensors" for k in tensors
+                          if k.startswith("score")}}}), encoding="utf-8")
+
+    sd = load_prm_head_state(tmp_path)
+    assert set(sd) == {"net.0.weight", "net.0.bias", "net.2.weight", "net.2.bias"}
+    assert torch.equal(sd["net.0.weight"], tensors["score.0.weight"])
+    assert torch.equal(sd["net.2.bias"], tensors["score.2.bias"])
+    head = PRMHead(h)
+    head.load_state_dict(sd)                       # shapes line up with the real head
+    assert torch.equal(head.net[2].bias.detach(), tensors["score.2.bias"])
+
+    # a single-file checkpoint works too, and a missing key is an error, not a silent skip
+    (tmp_path / "model.safetensors.index.json").unlink()
+    save_file({k: v for k, v in tensors.items() if k.startswith("score")},
+              str(tmp_path / "model.safetensors"))
+    assert torch.equal(load_prm_head_state(tmp_path)["net.0.bias"], tensors["score.0.bias"])
+    save_file({"score.0.weight": tensors["score.0.weight"]},
+              str(tmp_path / "model.safetensors"))
+    with pytest.raises(KeyError):
+        load_prm_head_state(tmp_path)
+
+
+def test_split_state_dict():
+    from koprm.train.model import split_state_dict
+
+    backbone, head = split_state_dict({"backbone.layers.0.w": 1, "head.net.0.weight": 2,
+                                       "other": 3})
+    assert backbone == {"layers.0.w": 1} and head == {"net.0.weight": 2}
+
+
+def test_grad_accum_for_effective_batch():
+    from koprm.train.train import EFFECTIVE_BATCH, grad_accum_for
+
+    assert EFFECTIVE_BATCH == 64
+    assert grad_accum_for(4) == 16 and grad_accum_for(6) == 10      # single GPU: unchanged
+    assert grad_accum_for(1, 4) == 16 and grad_accum_for(2, 4) == 8
+    assert grad_accum_for(16, 4) == 1
+    for bad in ((3, 4), (5, 2), (6, 4)):
+        with pytest.raises(SystemExit):
+            grad_accum_for(*bad)
+
+
+def test_decoder_layers_finds_the_blocks():
+    from koprm.train.train import decoder_layers
+
+    class Wrapped(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([torch.nn.Linear(2, 2) for _ in range(3)])
+
+    class Nested(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Wrapped()
+
+    assert len(decoder_layers(Wrapped())) == 3
+    assert len(decoder_layers(Nested())) == 3
+    assert decoder_layers(torch.nn.Linear(2, 2)) == []

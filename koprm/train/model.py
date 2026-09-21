@@ -125,6 +125,48 @@ def encode_example(tokenizer, problem_ko: str, steps: list[str], sep_token: str,
     return list(ids), pos
 
 
+# Qwen2ForProcessRewardModel stores the head as `score.0` (Linear h->h) and `score.2`
+# (Linear h->2) -- exactly PRMHead.net[0] and net[2] (§12.2).
+PRM_HEAD_KEYS = {
+    "score.0.weight": "net.0.weight",
+    "score.0.bias": "net.0.bias",
+    "score.2.weight": "net.2.weight",
+    "score.2.bias": "net.2.bias",
+}
+PRM_SEP_TOKEN = "<extra_0>"  # id 151651 in the PRM tokenizer, a single token
+
+
+def resolve_model_dir(name: str | os.PathLike) -> Path:
+    """A local directory for `name` (a path, or a cached hub snapshot)."""
+    return Path(name) if os.path.isdir(str(name)) else Path(_local_snapshot(str(name)))
+
+
+def load_prm_head_state(model_dir: str | os.PathLike) -> dict:
+    """The two head Linears of a PRM checkpoint as a `PRMHead` state dict (float32)."""
+    from safetensors import safe_open
+
+    d = resolve_model_dir(model_dir)
+    index = d / "model.safetensors.index.json"
+    if index.exists():
+        weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
+        per_file: dict[str, list[str]] = {}
+        for src in PRM_HEAD_KEYS:
+            if src not in weight_map:
+                raise KeyError(f"{d}: no {src} in the safetensors index")
+            per_file.setdefault(weight_map[src], []).append(src)
+    else:
+        per_file = {"model.safetensors": list(PRM_HEAD_KEYS)}
+    out: dict[str, torch.Tensor] = {}
+    for fname, keys in per_file.items():
+        with safe_open(str(d / fname), framework="pt") as f:
+            available = set(f.keys())
+            for src in keys:
+                if src not in available:
+                    raise KeyError(f"{d / fname}: no {src}")
+                out[PRM_HEAD_KEYS[src]] = f.get_tensor(src).to(torch.float32)
+    return out
+
+
 class PRMHead(nn.Module):
     """Linear(h, h) -> ReLU -> Linear(h, 2), always float32."""
 
@@ -138,6 +180,14 @@ class PRMHead(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         return self.net(hidden_states.to(torch.float32))
+
+
+def split_state_dict(state_dict: dict) -> tuple[dict, dict]:
+    """A gathered StepPRM state dict -> (backbone state dict, head state dict)."""
+    backbone = {k[len("backbone."):]: v for k, v in state_dict.items()
+                if k.startswith("backbone.")}
+    head = {k[len("head."):]: v for k, v in state_dict.items() if k.startswith("head.")}
+    return backbone, head
 
 
 class StepPRM(nn.Module):
@@ -172,12 +222,48 @@ class StepPRM(nn.Module):
         model = cls(backbone, tokenizer, sep_token, backbone_name)
         return model.to(device)
 
-    def save_pretrained(self, save_dir: str | os.PathLike) -> None:
+    @classmethod
+    def from_prm(cls, prm_name: str, sep_token: str | None = PRM_SEP_TOKEN,
+                 dtype: torch.dtype | None = None, device: str = "cpu",
+                 attn_implementation: str | None = None) -> StepPRM:
+        """§12.2: start from Qwen2.5-Math-PRM (backbone *and* the trained 2-class head)."""
+        from transformers import AutoConfig, AutoModel
+
+        d = resolve_model_dir(prm_name)
+        tokenizer = load_tokenizer(d)
+        sep_token, _ = find_sep_token(tokenizer, sep_token)
+        kw: dict = {}
+        if dtype is not None:
+            kw["dtype"] = dtype
+        if attn_implementation:
+            kw["attn_implementation"] = attn_implementation
+        cfg = AutoConfig.from_pretrained(d, trust_remote_code=True)
+        if getattr(cfg, "model_type", None) == "qwen2":
+            # the config resolves to Qwen2Model: no remote code, and the `model.` prefix of
+            # the ForProcessRewardModel checkpoint is stripped by the base-model loader.
+            backbone = AutoModel.from_pretrained(d, trust_remote_code=False, **kw)
+        else:
+            full = AutoModel.from_pretrained(d, trust_remote_code=True, **kw)
+            backbone = getattr(full, "model", full)
+        model = cls(backbone, tokenizer, sep_token, str(prm_name))
+        model.head.load_state_dict(load_prm_head_state(d))
+        return model.to(device)
+
+    def save_pretrained(self, save_dir: str | os.PathLike, state_dict: dict | None = None
+                        ) -> None:
+        """`state_dict` (full, CPU) comes from FSDP's gather; without it the live model."""
         d = Path(save_dir)
         d.mkdir(parents=True, exist_ok=True)
-        self.backbone.save_pretrained(d)
+        if state_dict is None:
+            self.backbone.save_pretrained(d)
+            head_sd = self.head.state_dict()
+        else:
+            backbone_sd, head_sd = split_state_dict(state_dict)
+            if not backbone_sd or not head_sd:
+                raise ValueError("state_dict has no backbone.*/head.* entries")
+            self.backbone.save_pretrained(d, state_dict=backbone_sd)
         self.tokenizer.save_pretrained(d)
-        torch.save(self.head.state_dict(), d / HEAD_FILE)
+        torch.save(head_sd, d / HEAD_FILE)
         (d / PRM_CONFIG_FILE).write_text(
             json.dumps(
                 {

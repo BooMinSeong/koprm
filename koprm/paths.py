@@ -27,6 +27,11 @@ GENERATORS = {
     "exaone-1.2b": "LGAI-EXAONE/EXAONE-4.0-1.2B",
     "qwen-3b": "Qwen/Qwen2.5-3B-Instruct",
     "qwen-1.5b": "Qwen/Qwen2.5-1.5B-Instruct",  # hold-out generator (eval only)
+    # Stronger generators for AIME, where the small ones barely solve anything (§15.8c).
+    # Both templates take enable_thinking: pass --chat-kwargs '{"enable_thinking": false}'
+    # for the non-reasoning mode (Qwen3 defaults to thinking on, EXAONE-4.0 to off).
+    "exaone-32b": "LGAI-EXAONE/EXAONE-4.0-32B",
+    "qwen3-8b": "Qwen/Qwen3-8B",
 }
 TEACHER_MODEL = "Qwen/Qwen2.5-Math-PRM-72B"
 TEACHER_MODEL_SMALL = "Qwen/Qwen2.5-Math-PRM-7B"  # pilot / smoke tests only
