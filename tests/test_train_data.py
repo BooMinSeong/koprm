@@ -1,5 +1,6 @@
 """train/data.py on a stub tokenizer (no model download, no network)."""
 import math
+from pathlib import Path
 
 import pytest
 import torch
@@ -240,3 +241,68 @@ def test_decoder_layers_finds_the_blocks():
     assert len(decoder_layers(Wrapped())) == 3
     assert len(decoder_layers(Nested())) == 3
     assert decoder_layers(torch.nn.Linear(2, 2)) == []
+
+
+def test_clean_backbone_config_drops_remote_code_hooks():
+    from transformers import AutoConfig
+
+    from koprm.train.model import clean_backbone_config, needs_config_cleanup
+
+    cfg = AutoConfig.for_model("qwen2", hidden_size=8, num_hidden_layers=1,
+                               num_attention_heads=2, num_key_value_heads=2,
+                               vocab_size=32, intermediate_size=16)
+    assert not needs_config_cleanup(cfg)
+    assert clean_backbone_config(cfg) is cfg                 # nothing to clean: untouched
+
+    cfg.auto_map = {"AutoConfig": "configuration_qwen2_rm.Qwen2RMConfig",
+                    "AutoModel": "modeling_qwen2_rm.Qwen2ForProcessRewardModel"}
+    cfg.architectures = ["Qwen2ForProcessRewardModel"]
+    clean = clean_backbone_config(cfg, "Qwen2Model")
+    d = clean.to_dict()
+    assert "auto_map" not in d and d["architectures"] == ["Qwen2Model"]
+    assert d["model_type"] == "qwen2" and d["hidden_size"] == 8   # the rest survives
+
+
+def test_saved_config_never_carries_auto_map(tmp_path):
+    """save_pretrained cleans the config, so from_pretrained needs no remote code."""
+    import json as _json
+
+    from transformers import AutoConfig
+
+    from koprm.train.model import HEAD_FILE, PRM_CONFIG_FILE, StepPRM
+
+    cfg = AutoConfig.for_model("qwen2", hidden_size=8, num_hidden_layers=1,
+                               num_attention_heads=2, num_key_value_heads=2,
+                               vocab_size=32, intermediate_size=16)
+    cfg.auto_map = {"AutoModel": "modeling_qwen2_rm.Qwen2ForProcessRewardModel"}
+
+    class Backbone(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = cfg
+            self.lin = torch.nn.Linear(8, 8)
+
+        def save_pretrained(self, d, state_dict=None):
+            (Path(d) / "config.json").write_text(
+                _json.dumps(self.config.to_dict()), encoding="utf-8")
+
+    class Tok:
+        def convert_tokens_to_ids(self, t):
+            return 7
+
+        def save_pretrained(self, d):
+            (Path(d) / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+    model = StepPRM(Backbone(), Tok(), "<extra_0>", "Qwen/Qwen2.5-Math-PRM-7B")
+    model.save_pretrained(tmp_path)
+    saved = _json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert "auto_map" not in saved
+    assert saved["architectures"] == ["Backbone"]      # the live backbone class
+    assert (tmp_path / HEAD_FILE).exists() and (tmp_path / PRM_CONFIG_FILE).exists()
+
+    # the same holds for the FSDP path, where a gathered state dict is passed in
+    model.save_pretrained(tmp_path / "fsdp",
+                          state_dict={"backbone.lin.weight": torch.zeros(8, 8),
+                                      "head.net.0.weight": torch.zeros(8, 8)})
+    saved = _json.loads((tmp_path / "fsdp/config.json").read_text(encoding="utf-8"))
+    assert "auto_map" not in saved

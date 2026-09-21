@@ -182,6 +182,37 @@ class PRMHead(nn.Module):
         return self.net(hidden_states.to(torch.float32))
 
 
+# A backbone taken out of a remote-code checkpoint (Qwen2ForProcessRewardModel) keeps that
+# checkpoint's `auto_map`, so a saved config would send the loader looking for
+# configuration_qwen2_rm.py that we never copy. The backbone itself is a plain Qwen2Model.
+REMOTE_CODE_KEYS = ("auto_map", "custom_pipelines")
+
+
+def needs_config_cleanup(config) -> bool:
+    d = config.to_dict() if hasattr(config, "to_dict") else dict(config)
+    return any(k in d for k in REMOTE_CODE_KEYS) or any(k.startswith("custom_") for k in d)
+
+
+def clean_backbone_config(config, architecture: str | None = None):
+    """Rebuild a config without the remote-code hooks; a no-op when there are none."""
+    if not needs_config_cleanup(config):
+        return config
+    from transformers import AutoConfig
+
+    d = config.to_dict()
+    model_type = d.pop("model_type", None) or getattr(config, "model_type", None)
+    for key in (*REMOTE_CODE_KEYS, "architectures", "transformers_version", "_name_or_path"):
+        d.pop(key, None)
+    for key in [k for k in d if k.startswith("custom_")]:
+        d.pop(key)
+    try:
+        clean = AutoConfig.for_model(model_type, **d)
+    except Exception:  # noqa: BLE001 - unknown model type: keep the remote code
+        return config
+    clean.architectures = [architecture or "Qwen2Model"]
+    return clean
+
+
 def split_state_dict(state_dict: dict) -> tuple[dict, dict]:
     """A gathered StepPRM state dict -> (backbone state dict, head state dict)."""
     backbone = {k[len("backbone."):]: v for k, v in state_dict.items()
@@ -245,6 +276,7 @@ class StepPRM(nn.Module):
         else:
             full = AutoModel.from_pretrained(d, trust_remote_code=True, **kw)
             backbone = getattr(full, "model", full)
+        backbone.config = clean_backbone_config(backbone.config, type(backbone).__name__)
         model = cls(backbone, tokenizer, sep_token, str(prm_name))
         model.head.load_state_dict(load_prm_head_state(d))
         return model.to(device)
@@ -254,6 +286,9 @@ class StepPRM(nn.Module):
         """`state_dict` (full, CPU) comes from FSDP's gather; without it the live model."""
         d = Path(save_dir)
         d.mkdir(parents=True, exist_ok=True)
+        # never write a config that points at remote code we do not ship
+        self.backbone.config = clean_backbone_config(self.backbone.config,
+                                                     type(self.backbone).__name__)
         if state_dict is None:
             self.backbone.save_pretrained(d)
             head_sd = self.head.state_dict()
@@ -287,10 +322,13 @@ class StepPRM(nn.Module):
         d = Path(ckpt_dir)
         cfg = json.loads((d / PRM_CONFIG_FILE).read_text(encoding="utf-8"))
         tokenizer = load_tokenizer(d)
-        kw = {"trust_remote_code": True}
+        kw = {}
         if dtype is not None:
             kw["dtype"] = dtype
-        backbone = AutoModel.from_pretrained(d, **kw)
+        try:  # a clean config needs no remote code; only fall back when it does
+            backbone = AutoModel.from_pretrained(d, trust_remote_code=False, **kw)
+        except Exception:  # noqa: BLE001 - any loader error means remote code is needed
+            backbone = AutoModel.from_pretrained(d, trust_remote_code=True, **kw)
         model = cls(backbone, tokenizer, cfg["sep_token"], cfg.get("backbone", ""))
         model.head.load_state_dict(torch.load(d / HEAD_FILE, map_location="cpu"))
         return model.to(device)
