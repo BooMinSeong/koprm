@@ -43,7 +43,7 @@ import numpy as np
 
 from koprm.data.sources import last_boxed
 from koprm.io import load_jsonl, write_jsonl
-from koprm.paths import EVAL
+from koprm.paths import EVAL, SYSTEM_PROMPTS
 from koprm.verify import answers_equal
 
 METHODS = ("naive", "weighted", "maj")
@@ -426,6 +426,8 @@ def main() -> None:
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--max-len", type=int, default=4096)
+    ap.add_argument("--system-prompt", choices=["ko", "en"], default="ko",
+                    help="the student's template; ko is what every student was trained with")
     ap.add_argument("--timeout", type=float, default=3.0)
     ap.add_argument("--save-scores", default=None,
                     help="write the per-step probabilities as jsonl (re-aggregate later)")
@@ -451,7 +453,8 @@ def main() -> None:
     else:
         from koprm.eval.scorer import StudentScorer
 
-        scorer = StudentScorer(args.scorer, device=args.device, max_len=args.max_len)
+        scorer = StudentScorer(args.scorer, device=args.device, max_len=args.max_len,
+                               system_prompt=SYSTEM_PROMPTS[args.system_prompt])
         scores = rescore(rows, scorer, batch_size=args.batch_size)
         scorer_name = args.scorer
 

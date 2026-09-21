@@ -47,6 +47,20 @@ SYSTEM_PROMPT_KO = (
     "따라서 최종 답은: $\\boxed{답}$입니다. 맞기를 바랍니다.\n\n"
     "여기서 [답]은 문제를 푸는 최종 숫자나 식입니다."
 )
+# The English original of the same prompt (komath/sal), for scoring English solutions.
+SYSTEM_PROMPT_EN = (
+    "Solve the following math problem efficiently and clearly:\n\n"
+    "- For simple problems (2 steps or fewer):\nProvide a concise solution with minimal "
+    "explanation.\n\n"
+    "- For complex problems (3 steps or more):\nUse this step-by-step format:\n\n"
+    "## Step 1: [Concise description]\n[Brief explanation and calculations]\n\n"
+    "## Step 2: [Concise description]\n[Brief explanation and calculations]\n\n...\n\n"
+    "Regardless of the approach, always conclude with:\n\n"
+    "Therefore, the final answer is: $\\boxed{answer}$. I hope it is correct.\n\n"
+    "Where [answer] is just the final number or expression that solves the problem."
+)
+SYSTEM_PROMPTS = {"ko": SYSTEM_PROMPT_KO, "en": SYSTEM_PROMPT_EN}
+
 # Teacher (Qwen2.5-Math-PRM) system prompt from the model card.
 TEACHER_SYSTEM_PROMPT = "Please reason step by step, and put your final answer within \\boxed{}."
 STEP_SEP = "\n\n"

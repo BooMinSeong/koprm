@@ -9,7 +9,8 @@ Input is assembled directly: "<extra_0>".join(steps_en) + "<extra_0>" inside the
 template with the model-card system prompt. The pooler returns raw 2-class logits at each
 <extra_0> position (use_activation=False, head in float32); we store z_t = l1 - l0.
 
-Rows in : {id, problem_en, steps_en}
+Rows in : {id, problem_en, steps_en} (`--problem-field` / `--steps-field` pick other
+          fields, e.g. steps_ko to run the English PRM on Korean steps directly)
 Rows out: {id, teacher_logodds: [z_1..z_T], teacher_model}
 """
 from __future__ import annotations
@@ -113,6 +114,8 @@ def score_file(
     batch: int = 2048,
     max_model_len: int = 4096,
     gpu_memory_utilization: float = 0.9,
+    problem_field: str = "problem_en",
+    steps_field: str = "steps_en",
 ) -> None:
     rows = load_jsonl(in_path)
     out = Path(out_path)
@@ -126,7 +129,7 @@ def score_file(
     teacher = Teacher(model, tp, max_model_len, gpu_memory_utilization, quantization)
     for b in range(0, len(todo), batch):
         chunk = todo[b : b + batch]
-        zs = teacher.score([r["problem_en"] for r in chunk], [r["steps_en"] for r in chunk])
+        zs = teacher.score([r[problem_field] for r in chunk], [r[steps_field] for r in chunk])
         write_jsonl(
             out,
             (
@@ -148,9 +151,13 @@ def main() -> None:
     ap.add_argument("--max-model-len", type=int, default=4096)
     ap.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     ap.add_argument("--batch", type=int, default=2048)
+    ap.add_argument("--problem-field", default="problem_en")
+    ap.add_argument("--steps-field", default="steps_en",
+                    help="steps_ko scores Korean steps directly (the 현행 baseline)")
     args = ap.parse_args()
     score_file(args.inp, args.out, args.model, args.tp, args.quantization, args.batch,
-               args.max_model_len, args.gpu_memory_utilization)
+               args.max_model_len, args.gpu_memory_utilization,
+               problem_field=args.problem_field, steps_field=args.steps_field)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """§4.2 On-policy Korean solution generation with vLLM.
 
-Input : problems jsonl with `problem_id`, `problem_ko`, `answer`.
+Input : problems jsonl with `problem_id`, `problem_ko` (or another `--problem-field`,
+        e.g. `problem_en` with `--system-prompt en`), `answer`.
 Output: jsonl rows {id, problem_id, generator, sample_idx, text, steps, finish_reason,
         n_tokens} where id = f"{problem_id}#{generator}#{sample_idx}".
 
@@ -19,7 +20,7 @@ import argparse
 from pathlib import Path
 
 from koprm.io import load_jsonl, write_jsonl
-from koprm.paths import GENERATORS, STEP_SEP, SYSTEM_PROMPT_KO
+from koprm.paths import GENERATORS, STEP_SEP, SYSTEM_PROMPT_KO, SYSTEM_PROMPTS
 
 
 def split_steps(text: str) -> list[str]:
@@ -49,6 +50,8 @@ def generate(
     tensor_parallel_size: int = 1,
     batch_problems: int = 512,
     sample_offset: int = 0,
+    problem_field: str = "problem_ko",
+    system_prompt: str = SYSTEM_PROMPT_KO,
 ) -> None:
     from vllm import LLM, SamplingParams
 
@@ -71,7 +74,7 @@ def generate(
     print(f"[gen] {generator}: {len(todo)} problems to do ({len(done)} already done) -> {out_path}")
     for b in range(0, len(todo), batch_problems):
         chunk = todo[b : b + batch_problems]
-        prompts = build_prompts(tok, [p["problem_ko"] for p in chunk])
+        prompts = build_prompts(tok, [p[problem_field] for p in chunk], system_prompt)
         outs = llm.generate(prompts, sp, use_tqdm=True)
         rows = []
         for p, o in zip(chunk, outs):
@@ -99,6 +102,9 @@ def main() -> None:
     ap.add_argument("--generator", required=True, choices=list(GENERATORS) + ["custom"])
     ap.add_argument("--model-path", default=None)
     ap.add_argument("--n", type=int, default=2)
+    ap.add_argument("--problem-field", default="problem_ko",
+                    help="problem text field (problem_en for the English MATH500 run)")
+    ap.add_argument("--system-prompt", choices=["ko", "en"], default="ko")
     ap.add_argument("--sample-offset", type=int, default=0,
                     help="shift sample_idx (and the id suffix) so a second pass cannot collide")
     ap.add_argument("--out", required=True)
@@ -132,6 +138,8 @@ def main() -> None:
         gpu_memory_utilization=args.gpu_memory_utilization,
         tensor_parallel_size=args.tp,
         sample_offset=args.sample_offset,
+        problem_field=args.problem_field,
+        system_prompt=SYSTEM_PROMPTS[args.system_prompt],
     )
 
 
