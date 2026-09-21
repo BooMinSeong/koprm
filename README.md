@@ -34,6 +34,8 @@ uv sync --extra dev          # vllm 0.29, transformers 5.17, torch 2.13, math-ve
 
 2026-09-21에는 집계 방식(last/min/prod/mean), B 풀 4.8만까지의 학습 곡선, 3B 백본, 소프트+y를 추가로 실행했다(results.md의 "확장 실험", Plan §15.7). 4.8만에서 교사 소프트가 naive@64 0.744, 결과 항만이 weighted@64 0.780으로 현행 영어 PRM(0.664 / 0.718)을 넘는다.
 
+같은 날 분포 이동도 쟀다(results.md의 "분포 이동", Plan §15.8). 한국어로만 학습한 소프트 학생이 영어 MATH500에서 naive@64 0.826으로 영어 PRM 7B(0.830)에 붙고, 한국어 ProcessBench F1은 72B 0.746 / 7B 0.579 / 학생 0.511이다.
+
 ## 참고 구현
 
 - `../komath`: KO MATH500 테스트타임 컴퓨트 하네스. 생성 프롬프트, `\n\n` 스텝 분절, math_verify 채점 방식, BoN 집계(naive/weighted/maj)를 그대로 따른다.
