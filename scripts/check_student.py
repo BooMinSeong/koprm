@@ -21,7 +21,7 @@ import torch
 from koprm.paths import STUDENT_BACKBONE, STUDENT_BACKBONE_FALLBACK
 from koprm.train.data import Collator, build_dataset
 from koprm.train.loss import prm_loss, step_probs
-from koprm.train.model import StepPRM
+from koprm.train.model import StepPRM, input_embeddings
 
 ROWS = [
     {
@@ -61,7 +61,7 @@ def check(backbone: str, max_len: int = 2048) -> bool:
     single = len(ids) == 1
     print(f"[1] SEP token {sep!r} -> ids {ids}  single_id={single}  sep_id={model.sep_id}")
     print(f"    tokenizer len={len(tok)}  embedding rows="
-          f"{model.backbone.get_input_embeddings().weight.shape[0]}  "
+          f"{input_embeddings(model.backbone).weight.shape[0]}  "
           f"hidden={model.backbone.config.hidden_size}  head_dtype="
           f"{next(model.head.parameters()).dtype}")
     ok &= single
@@ -99,7 +99,7 @@ def check(backbone: str, max_len: int = 2048) -> bool:
 
     loss.loss.backward()
     head_g = model.head.net[0].weight.grad
-    emb_g = model.backbone.get_input_embeddings().weight.grad
+    emb_g = input_embeddings(model.backbone).weight.grad
     n_none = sum(1 for p in model.parameters() if p.requires_grad and p.grad is None)
     print(f"[5] backward ok: head grad norm={head_g.norm().item():.4e}, "
           f"embedding grad norm={emb_g.norm().item():.4e}, params without grad={n_none}")
