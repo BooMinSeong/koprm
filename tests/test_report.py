@@ -353,3 +353,91 @@ def test_extended_section_is_rendered_and_degrades(tmp_path):
 
     empty = render_md(collect(tmp_path / "nothing"))
     assert "## 확장 실험 (2026-09-21)" in empty and NA in empty
+
+
+# ------------------------------------------------------------- 분포 이동 (2026-09-21)
+
+
+def _pb_json(err, corr, f1, splits=("gsm8k", "math", "olympiadbench", "omnimath")):
+    return {
+        "threshold": 0.5, "n_rows": 761, "n_scored": 761, "n_skipped": 0,
+        "overall": {"n_rows": 761, "n_error_rows": 472, "n_correct_rows": 289,
+                    "err_acc": err, "corr_acc": corr, "f1": f1, "within1": 0.6,
+                    "err_no_prediction_frac": 0.1},
+        "by_split": {s: {"err_acc": err, "corr_acc": corr, "f1": f1 - i * 0.01,
+                         "within1": 0.6, "n_error_rows": 100, "n_correct_rows": 60}
+                     for i, s in enumerate(splits)},
+        "scorer": "x", "rows": "data/shift/pb_rows.jsonl",
+    }
+
+
+def _shift_tree(tmp_path):
+    data = _tiny_tree(tmp_path)                      # gives eval/math500 + selection.json
+    for sub, scorer, v in (("en", "prm7b", 0.55), ("en", "B_48k_soft", 0.62),
+                           ("aime", "prm7b", 0.10), ("aime", "B_48k_soft", 0.14)):
+        _write_json(data / "shift" / sub / f"{scorer}_exaone-1.2b.json", _all_shape(v))
+    # the KO side-by-side numbers for a 48k run come from eval/math500_big
+    _write_json(data / "eval/dev_big/B_48k_soft_ep3_exaone-1.2b.json", _bon(0.67, 0.70))
+    _write_json(data / "eval/math500_big/B_48k_soft_ep3_EXAONE-4.0-1.2B.json",
+                _all_shape(0.744))
+    _write_json(data / "eval/math500/existing_EXAONE-4.0-1.2B_last.json", _bon(0.664))
+    for lang, f1 in (("ko", 0.51), ("en", 0.735)):
+        _write_json(data / "shift/pb" / f"prm7b_{lang}.json", _pb_json(0.62, 0.88, f1))
+    write_jsonl(data / "shift/pb_rows.jsonl",
+                [{"id": i, "split": "gsm8k"} for i in range(3)]
+                + [{"id": 10 + i, "split": "math"} for i in range(2)])
+    return data
+
+
+def test_collect_shift_reads_bon_and_processbench(tmp_path):
+    from koprm.report import collect_shift, load_json
+
+    data = _shift_tree(tmp_path)
+    shift = collect_shift(data, load_json(data / "eval/selection.json"))
+
+    en = shift["en_math500"]["exaone-1.2b"]
+    assert en["prm7b"]["naive@16"] == 0.55 and en["prm7b"]["naive@64"] == 0.55
+    assert en["prm7b"]["mean naive@64"] == pytest.approx(0.52)   # the 'mean' sub-result
+    assert en["prm7b"]["KO naive@64"] == 0.664                   # 현행 file, not a run file
+    assert en["B_48k_soft"]["KO naive@64"] == 0.744              # math500_big at its epoch
+    assert en["B_12k_soft"]["naive@16"] is None                  # no shift file
+    assert "pass@1" not in en["prm7b"]
+    assert set(shift["en_math500"]) == {"exaone-1.2b", "qwen-3b"}
+    assert shift["en_math500"]["qwen-3b"]["prm7b"]["naive@16"] is None
+
+    aime = shift["aime"]["exaone-1.2b"]["B_48k_soft"]
+    assert aime["naive@64"] == 0.14 and aime["pass@1"] == 0.9 and aime["pass@64"] == 0.9
+
+    pb = shift["processbench"]
+    assert pb["rows_by_split"] == {"gsm8k": 3, "math": 2}
+    assert pb["splits"] == ["gsm8k", "math"]                     # only the splits present
+    assert pb["scorers"]["prm7b"]["en"]["f1"] == 0.735
+    assert pb["scorers"]["prm7b"]["ko"]["f1"] == 0.51
+    assert pb["scorers"]["prm7b"]["ko"]["split_f1"] == {"gsm8k": 0.51,
+                                                        "math": pytest.approx(0.50)}
+    assert pb["scorers"]["prm7b"]["ko"]["n_scored"] == 761
+    assert pb["scorers"]["prm72b"]["ko"]["f1"] is None            # file absent
+    assert pb["prm7b_published_f1"] == 73.5
+
+
+def test_pb_parts_accepts_other_split_keys():
+    from koprm.report import _pb_parts
+
+    for key in ("by_split", "splits", "per_split"):
+        overall, splits = _pb_parts({"overall": {"f1": 0.5}, key: {"math": {"f1": 0.4}}})
+        assert overall == {"f1": 0.5} and splits == {"math": {"f1": 0.4}}
+    assert _pb_parts(None) == ({}, {})
+    assert _pb_parts({"overall": {"f1": 0.5}}) == ({"f1": 0.5}, {})
+
+
+def test_shift_section_is_rendered_and_degrades(tmp_path):
+    data = _shift_tree(tmp_path)
+    md = render_md(collect(data))
+    assert "## 분포 이동 (2026-09-21)" in md
+    for head in ("### k. 영어 MATH500 BoN", "### l. 한국어 AIME", "### m. 한국어·영어 ProcessBench"):
+        assert head in md
+    assert "**생성기 qwen-3b**" in md and "행 수: 5" in md
+    assert "73.5" in md                                   # the published reference line
+
+    empty = render_md(collect(tmp_path / "nothing"))
+    assert "## 분포 이동 (2026-09-21)" in empty and NA in empty

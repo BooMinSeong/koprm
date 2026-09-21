@@ -11,6 +11,10 @@ soft+y run on the original 12k set and the four aggregations (eval/agg). Those r
 no selection.json, so the epoch is chosen here: argmax over epochs of
 (naive@16 + weighted@16)/2 on dev, ties to the later epoch.
 
+The third part, "분포 이동 (2026-09-21)", reads data/shift/{en,aime}/<scorer>_<gen>.json
+(bon `all` shape) and data/shift/pb/<scorer>_<lang>.json (koprm.shift first-error), and
+puts each scorer's KO MATH500 naive@64 beside the shifted number.
+
     python -m koprm.report results [--data-dir data] [--out-dir data/reports]
     python -m koprm.report teacher-ref --dataset ENSEONG/ko-ko-math-500-test-EXAONE-4.0-1.2B-bon \\
         --dataset-config <cfg> --teacher data/teacher/math500_exaone16.jsonl \\
@@ -63,6 +67,16 @@ AGG_RUNS = ("existing", "A_12k", "B_12k", "B_12k_soft", "B_12k_outcome", "AB_12k
 AGGS = ("last", "min", "prod", "mean")
 AGG_COLS = (("naive", 16), ("naive", 64), ("weighted", 64))
 SOFT_Y_RUN = "B_12k_soft_y"
+
+# --- 분포 이동 (2026-09-21): English MATH500, Korean AIME, Korean ProcessBench
+SHIFT_SCORERS = ("prm7b", "B_48k_soft", "B_48k_outcome", "B_48k", "B_12k_soft",
+                 "B_12k_outcome", "A_12k")
+PB_SCORERS = ("prm7b", "prm72b") + SHIFT_SCORERS[1:]
+SHIFT_GENS = {"exaone-1.2b": PRIMARY_GEN, "qwen-3b": M500_GENS[1]}
+PB_LANGS = ("ko", "en")
+PB_SPLITS = ("gsm8k", "math", "olympiadbench", "omnimath")
+SHIFT_COLS = (("naive", 16), ("weighted", 16), ("naive", 64), ("weighted", 64))
+PRM7B_PUBLISHED_F1 = 73.5  # Qwen2.5-Math-PRM-7B on the full (English) ProcessBench
 _EP_RE = re.compile(r"_ep(\d+)_")
 
 
@@ -483,6 +497,88 @@ def collect_soft_y(data: Path, selection: dict | None) -> dict:
     return out
 
 
+# ------------------------------------------------------------------- 분포 이동: readers
+def ko_naive64(data: Path, scorer: str, gen: str, selection: dict | None) -> float | None:
+    """The same scorer's KO MATH500 naive@64 (last), for the side-by-side column."""
+    if scorer == "prm7b":  # the 현행 baseline: the English PRM on the Korean solutions
+        return metric(flat_result(
+            load_json(data / "eval/math500" / f"existing_{gen}_last.json"), "last"), "naive", 64)
+    if scorer.startswith("B_48k"):
+        ep, _ = dev_epoch(data / "eval/dev_big", scorer)
+        return metric(flat_result(run_file(data / "eval/math500_big", scorer, gen, ep), "last"),
+                      "naive", 64)
+    ep = _run_epoch(selection, scorer)
+    if ep is None:
+        ep, _ = dev_epoch(data / "eval/dev", scorer)
+    return metric(flat_result(run_file(data / "eval/math500", scorer, gen, ep), "last"),
+                  "naive", 64)
+
+
+def collect_bon_shift(data: Path, subdir: str, selection: dict | None,
+                      with_pass: bool = False) -> dict:
+    """(k)/(l) one table per generator: every scorer on the shifted benchmark."""
+    out: dict[str, dict] = {}
+    for gen, gen_full in SHIFT_GENS.items():
+        rows: dict[str, dict] = {}
+        for scorer in SHIFT_SCORERS:
+            raw = load_json(data / "shift" / subdir / f"{scorer}_{gen}.json")
+            last, mean = flat_result(raw, "last"), flat_result(raw, "mean")
+            cell = {f"{m}@{n}": metric(last, m, n) for m, n in SHIFT_COLS}
+            cell["mean naive@64"] = metric(mean, "naive", 64)
+            cell["KO naive@64"] = ko_naive64(data, scorer, gen_full, selection)
+            if with_pass:
+                cell["pass@1"] = metric(last, "pass", 1)
+                cell["pass@64"] = metric(last, "pass", 64)
+            rows[scorer] = cell
+        out[gen] = rows
+    return out
+
+
+def _pb_parts(raw: dict | None) -> tuple[dict, dict]:
+    """(overall, per split) from a koprm.shift first-error json, whatever the split key is."""
+    if not isinstance(raw, dict):
+        return {}, {}
+    for key in ("by_split", "splits", "per_split"):
+        if isinstance(raw.get(key), dict):
+            return raw.get("overall") or {}, raw[key]
+    return raw.get("overall") or {}, {}
+
+
+def collect_processbench(data: Path) -> dict:
+    """(m) first-error detection on Korean and English ProcessBench."""
+    counts: Counter = Counter()
+    for r in load_rows(data / "shift/pb_rows.jsonl"):
+        counts[r.get("split", "unknown")] += 1
+    splits = [s for s in PB_SPLITS if s in counts] or sorted(counts)
+    scorers: dict[str, dict] = {}
+    for scorer in PB_SCORERS:
+        per_lang: dict[str, dict] = {}
+        for lang in PB_LANGS:
+            raw = load_json(data / "shift/pb" / f"{scorer}_{lang}.json")
+            overall, by_split = _pb_parts(raw)
+            per_lang[lang] = {
+                "err_acc": overall.get("err_acc"),
+                "corr_acc": overall.get("corr_acc"),
+                "f1": overall.get("f1"),
+                "within1": overall.get("within1"),
+                "n_error_rows": overall.get("n_error_rows"),
+                "n_correct_rows": overall.get("n_correct_rows"),
+                "n_scored": (raw or {}).get("n_scored"),
+                "split_f1": {s: (by_split.get(s) or {}).get("f1") for s in splits},
+            }
+        scorers[scorer] = per_lang
+    return {"rows_by_split": dict(counts), "splits": splits, "scorers": scorers,
+            "prm7b_published_f1": PRM7B_PUBLISHED_F1}
+
+
+def collect_shift(data: Path, selection: dict | None) -> dict:
+    return {
+        "en_math500": collect_bon_shift(data, "en", selection),
+        "aime": collect_bon_shift(data, "aime", selection, with_pass=True),
+        "processbench": collect_processbench(data),
+    }
+
+
 def collect_extended(data: Path, selection: dict | None) -> dict:
     big, deltas = collect_big(data)
     return {
@@ -505,6 +601,7 @@ def collect(data: Path) -> dict:
         "reference_lines": collect_reference_lines(data),
         "primary_generator": PRIMARY_GEN,
         "extended": collect_extended(data, selection),
+        "shift": collect_shift(data, selection),
     }
 
 
@@ -716,6 +813,55 @@ def render_extended_md(ext: dict) -> list[str]:
     return out
 
 
+def _shift_bon_md(table: dict, with_pass: bool = False) -> list[str]:
+    cols = [f"{m}@{n}" for m, n in SHIFT_COLS] + ["mean naive@64", "KO naive@64"]
+    if with_pass:
+        cols += ["pass@1", "pass@64"]
+    out: list[str] = []
+    for gen, rows in table.items():
+        out += [f"**생성기 {gen}**", ""]
+        out.append(md_table(["scorer"] + cols,
+                            [[name] + [fmt((cell or {}).get(c)) for c in cols]
+                             for name, cell in rows.items()]))
+        out.append("")
+    return out
+
+
+def _pb_md(pb: dict) -> list[str]:
+    splits = pb["splits"]
+    header = ["scorer", "언어", "err", "corr", "F1", "±1"] + [f"F1 {s}" for s in splits]
+    rows = []
+    for scorer, per_lang in pb["scorers"].items():
+        for lang in PB_LANGS:
+            m = per_lang.get(lang) or {}
+            rows.append([scorer, lang, fmt(m.get("err_acc")), fmt(m.get("corr_acc")),
+                         fmt(m.get("f1")), fmt(m.get("within1"))]
+                        + [fmt((m.get("split_f1") or {}).get(s)) for s in splits])
+    counts = pb["rows_by_split"]
+    n = sum(counts.values())
+    out = [md_table(header, rows), "",
+           f"행 수: {n}" + (" (" + ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                            + ")" if counts else ""), ""]
+    ref = (pb["scorers"].get("prm7b") or {}).get("en", {}).get("f1")
+    out.append(f"참고: Qwen2.5-Math-PRM-7B의 공개 ProcessBench F1은 전체 벤치마크에서 "
+               f"약 {pb['prm7b_published_f1']}이다. 같은 모델이 이 영어 표본에서 내는 값은 "
+               f"{fmt(ref)}(F1 비율)이므로, 표본과 채점 방식의 차이를 감안해 읽는다.")
+    return out
+
+
+def render_shift_md(shift: dict) -> list[str]:
+    out = ["## 분포 이동 (2026-09-21)", "",
+           ("한국어로 학습한 학생을 영어 풀이, 한국어 AIME, 한국어 ProcessBench에 그대로 "
+            "얹었다. 현행(prm7b)은 Qwen2.5-Math-PRM-7B를 풀이에 직접 적용한 값이다."),
+           "", "### k. 영어 MATH500 BoN (한국어 템플릿으로 채점)", ""]
+    out += _shift_bon_md(shift["en_math500"])
+    out += ["### l. 한국어 AIME 2023/2024 (56문제 × 64샘플)", ""]
+    out += _shift_bon_md(shift["aime"], with_pass=True)
+    out += ["### m. 한국어·영어 ProcessBench (첫 오류 식별)", ""]
+    out += _pb_md(shift["processbench"])
+    return out
+
+
 def render_md(res: dict) -> str:
     out = ["# 결과 (Plan §7 보고 항목)", "",
            f"주 평가 생성기: {res['primary_generator']}. 값이 없는 칸은 {NA}다.", "",
@@ -733,6 +879,8 @@ def render_md(res: dict) -> str:
     out += ["", "### f. 참조선", "", _reference_md(res["reference_lines"]), ""]
     if res.get("extended"):
         out += render_extended_md(res["extended"])
+    if res.get("shift"):
+        out += render_shift_md(res["shift"])
     return "\n".join(out)
 
 
