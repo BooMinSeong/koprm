@@ -306,3 +306,75 @@ def test_saved_config_never_carries_auto_map(tmp_path):
                                       "head.net.0.weight": torch.zeros(8, 8)})
     saved = _json.loads((tmp_path / "fsdp/config.json").read_text(encoding="utf-8"))
     assert "auto_map" not in saved
+
+
+def test_take_decoder_and_input_embeddings():
+    from koprm.train.model import input_embeddings, take_decoder
+
+    class Decoder(torch.nn.Module):
+        def __init__(self, attr):
+            super().__init__()
+            setattr(self, attr, torch.nn.Embedding(8, 4))
+            self.h = torch.nn.ModuleList([torch.nn.Linear(4, 4)])
+
+    class CausalLM(torch.nn.Module):
+        def __init__(self, attr="transformer", getter=False):
+            super().__init__()
+            setattr(self, attr, Decoder("wte"))
+            self.lm_head = torch.nn.Linear(4, 8)
+            if getter:
+                self.get_decoder = lambda: getattr(self, attr)
+
+    for attr in ("model", "transformer", "base_model"):
+        dec = take_decoder(CausalLM(attr))
+        assert isinstance(dec, Decoder) and not hasattr(dec, "lm_head")
+    assert isinstance(take_decoder(CausalLM(getter=True)), Decoder)   # get_decoder wins
+    lonely = torch.nn.Linear(4, 4)
+    assert take_decoder(lonely) is lonely                              # nothing to unwrap
+
+    # the getter may be missing or raise (remote classes in transformers 5); fall back
+    dec = Decoder("wte")
+    assert input_embeddings(dec) is dec.wte
+    class NoGetter(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.odd_name = torch.nn.Embedding(4, 2)
+
+        def get_input_embeddings(self):
+            raise NotImplementedError
+
+    assert isinstance(input_embeddings(NoGetter()), torch.nn.Embedding)
+    assert input_embeddings(torch.nn.Linear(2, 2)) is None
+
+
+def test_copy_remote_code_follows_auto_map(tmp_path):
+    from koprm.train.model import copy_remote_code
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "modeling_exaone.py").write_text("# model", encoding="utf-8")
+    (src / "configuration_exaone.py").write_text("# config", encoding="utf-8")
+    (src / "unrelated.py").write_text("# no", encoding="utf-8")
+
+    class Cfg:
+        def __init__(self):
+            self.auto_map = {"AutoConfig": "configuration_exaone.ExaoneConfig",
+                             "AutoModelForCausalLM": "modeling_exaone.ExaoneForCausalLM"}
+
+    class Backbone(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = Cfg()
+
+    dest = tmp_path / "ckpt"
+    dest.mkdir()
+    copied = copy_remote_code(Backbone(), dest, str(src))
+    assert sorted(set(copied)) == ["configuration_exaone.py", "modeling_exaone.py"]
+    assert not (dest / "unrelated.py").exists()
+
+    class Clean(torch.nn.Module):          # no auto_map -> nothing to copy
+        def __init__(self):
+            super().__init__()
+            self.config = type("C", (), {})()
+
+    assert copy_remote_code(Clean(), dest, str(src)) == []

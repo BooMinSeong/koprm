@@ -26,6 +26,7 @@ SEP choice per backbone:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -61,6 +62,62 @@ def _offline_retry(loader, name, **kw):
         if "offline" not in str(e).lower() or os.path.isdir(str(name)):
             raise
         return loader(_local_snapshot(str(name)), **kw)
+
+
+# Some checkpoints register only a causal-LM class with AutoModel's config mapping (EXAONE
+# 3.5's remote code registers ExaoneForCausalLM only), so AutoModel cannot build the bare
+# decoder. We then load the causal LM and keep its decoder, dropping the LM head.
+DECODER_ATTRS = ("model", "transformer", "base_model")
+
+
+def take_decoder(full):
+    """The decoder stack of a causal LM (`get_decoder()`, else the usual attribute names)."""
+    get = getattr(full, "get_decoder", None)
+    if callable(get):
+        try:
+            dec = get()
+        except Exception:  # noqa: BLE001 - not every remote class implements it
+            dec = None
+        if isinstance(dec, nn.Module) and dec is not full:
+            return dec
+    for attr in DECODER_ATTRS:
+        mod = getattr(full, attr, None)
+        if isinstance(mod, nn.Module):
+            return mod
+    return full
+
+
+EMBED_ATTRS = ("embed_tokens", "wte", "word_embeddings", "tok_embeddings")
+
+
+def input_embeddings(module):
+    """The input embedding of a backbone, even when the remote class has no getter."""
+    get = getattr(module, "get_input_embeddings", None)
+    if callable(get):
+        try:
+            emb = get()
+        except (NotImplementedError, AttributeError):
+            emb = None
+        if isinstance(emb, nn.Module):
+            return emb
+    for attr in EMBED_ATTRS:
+        mod = getattr(module, attr, None)
+        if isinstance(mod, nn.Embedding):
+            return mod
+    return next((m for m in module.modules() if isinstance(m, nn.Embedding)), None)
+
+
+def load_backbone(name, **kw):
+    """AutoModel, or the decoder of AutoModelForCausalLM when AutoModel rejects the config."""
+    from transformers import AutoModel, AutoModelForCausalLM
+
+    try:
+        return _offline_retry(AutoModel.from_pretrained, name, **kw)
+    except ValueError as e:
+        if "Unrecognized configuration class" not in str(e):
+            raise
+    kw = {**kw, "trust_remote_code": True}
+    return take_decoder(_offline_retry(AutoModelForCausalLM.from_pretrained, name, **kw))
 
 
 def load_tokenizer(name, **kw):
@@ -213,6 +270,35 @@ def clean_backbone_config(config, architecture: str | None = None):
     return clean
 
 
+def copy_remote_code(backbone, dest: Path, backbone_name: str = "") -> list[str]:
+    """Copy the .py modules a kept `auto_map` points at, so the checkpoint loads by itself."""
+    import inspect
+    import shutil
+
+    auto_map = getattr(backbone.config, "auto_map", None)
+    if not auto_map:
+        return []
+    sources: list[Path] = []
+    try:  # the dynamic module transformers compiled for this class
+        sources.append(Path(inspect.getfile(type(backbone))).parent)
+    except (TypeError, OSError):
+        pass
+    if backbone_name and os.path.isdir(str(backbone_name)):
+        sources.append(Path(backbone_name))
+    elif backbone_name:
+        with contextlib.suppress(Exception):  # only a cached snapshot resolves
+            sources.append(resolve_model_dir(backbone_name))
+    copied = []
+    for ref in set(auto_map.values()):
+        fname = f"{str(ref).split('.')[0]}.py"
+        for src in sources:
+            if (src / fname).exists():
+                shutil.copy2(src / fname, dest / fname)
+                copied.append(fname)
+                break
+    return copied
+
+
 def split_state_dict(state_dict: dict) -> tuple[dict, dict]:
     """A gathered StepPRM state dict -> (backbone state dict, head state dict)."""
     backbone = {k[len("backbone."):]: v for k, v in state_dict.items()
@@ -236,8 +322,6 @@ class StepPRM(nn.Module):
     def from_backbone(cls, backbone_name: str, sep_token: str | None = None,
                       dtype: torch.dtype | None = None, device: str = "cpu",
                       attn_implementation: str | None = None) -> StepPRM:
-        from transformers import AutoModel
-
         tokenizer = load_tokenizer(backbone_name)
         sep_token, added = find_sep_token(tokenizer, sep_token)
         kw = {"trust_remote_code": True}
@@ -245,10 +329,11 @@ class StepPRM(nn.Module):
             kw["dtype"] = dtype
         if attn_implementation:
             kw["attn_implementation"] = attn_implementation
-        backbone = _offline_retry(AutoModel.from_pretrained, backbone_name, **kw)
-        n_rows = backbone.get_input_embeddings().weight.shape[0]
+        backbone = load_backbone(backbone_name, **kw)
+        emb = input_embeddings(backbone)
+        n_rows = emb.weight.shape[0] if emb is not None else None
         sep_id = tokenizer.convert_tokens_to_ids(sep_token)
-        if added and sep_id >= n_rows:
+        if added and n_rows is not None and sep_id >= n_rows:
             backbone.resize_token_embeddings(len(tokenizer))
         model = cls(backbone, tokenizer, sep_token, backbone_name)
         return model.to(device)
@@ -297,6 +382,7 @@ class StepPRM(nn.Module):
             if not backbone_sd or not head_sd:
                 raise ValueError("state_dict has no backbone.*/head.* entries")
             self.backbone.save_pretrained(d, state_dict=backbone_sd)
+        copy_remote_code(self.backbone, d, self.backbone_name)
         self.tokenizer.save_pretrained(d)
         torch.save(head_sd, d / HEAD_FILE)
         (d / PRM_CONFIG_FILE).write_text(
@@ -328,7 +414,7 @@ class StepPRM(nn.Module):
         try:  # a clean config needs no remote code; only fall back when it does
             backbone = AutoModel.from_pretrained(d, trust_remote_code=False, **kw)
         except Exception:  # noqa: BLE001 - any loader error means remote code is needed
-            backbone = AutoModel.from_pretrained(d, trust_remote_code=True, **kw)
+            backbone = load_backbone(d, trust_remote_code=True, **kw)
         model = cls(backbone, tokenizer, cfg["sep_token"], cfg.get("backbone", ""))
         model.head.load_state_dict(torch.load(d / HEAD_FILE, map_location="cpu"))
         return model.to(device)
