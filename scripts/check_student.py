@@ -66,10 +66,10 @@ def check(backbone: str, max_len: int = 2048) -> bool:
           f"{next(model.head.parameters()).dtype}")
     ok &= single
 
-    ds, stats = build_dataset(ROWS, tok, sep, max_len=max_len, with_soft=True, verbose=False)
+    ds, stats = build_dataset(ROWS, tok, sep, max_len=max_len, soft_mode="soft", verbose=False)
     print(f"[2] dataset: {stats}")
     ok &= len(ds) == len(ROWS)
-    batch = Collator(pad_id=tok.pad_token_id or tok.eos_token_id or 0, with_soft=True)(
+    batch = Collator(pad_id=tok.pad_token_id or tok.eos_token_id or 0, soft_mode="soft")(
         list(ds.examples))
     print(f"    input_ids {tuple(batch['input_ids'].shape)}  "
           f"sep_positions {batch['sep_positions'].tolist()}  "
