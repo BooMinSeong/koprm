@@ -36,6 +36,8 @@ uv sync --extra dev          # vllm 0.29, transformers 5.17, torch 2.13, math-ve
 
 같은 날 분포 이동도 쟀다(results.md의 "분포 이동", Plan §15.8). 한국어로만 학습한 소프트 학생이 영어 MATH500에서 naive@64 0.826으로 영어 PRM 7B(0.830)에 붙고, 한국어 ProcessBench F1은 72B 0.746 / 7B 0.579 / 학생 0.511이다.
 
+2026-09-22에는 학생을 7~8B로 키웠다(results.md의 "큰 학생", Plan §15.9). Qwen3-8B 백본에 같은 2.4만 소프트 라벨로 4장 FSDP 학습하면 KO MATH500 naive@64가 0.796으로, 현행 영어 PRM(0.664)과 4.8만으로 학습한 1.2B(0.744)를 모두 넘는다.
+
 ## 참고 구현
 
 - `../komath`: KO MATH500 테스트타임 컴퓨트 하네스. 생성 프롬프트, `\n\n` 스텝 분절, math_verify 채점 방식, BoN 집계(naive/weighted/maj)를 그대로 따른다.
