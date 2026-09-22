@@ -2586,6 +2586,150 @@
           "pass@1": 0.017857142857142856,
           "pass@64": 0.08928571428571429
         }
+      },
+      "qwen3-4b": {
+        "prm7b": {
+          "naive@16": 0.125,
+          "weighted@16": 0.125,
+          "naive@64": 0.16071428571428573,
+          "weighted@64": 0.10714285714285714,
+          "mean naive@64": 0.19642857142857142,
+          "KO naive@64": null,
+          "pass@1": 0.08928571428571429,
+          "pass@64": 0.39285714285714285
+        },
+        "B_48k_soft": {
+          "naive@16": 0.16071428571428573,
+          "weighted@16": 0.14285714285714285,
+          "naive@64": 0.17857142857142858,
+          "weighted@64": 0.14285714285714285,
+          "mean naive@64": 0.19642857142857142,
+          "KO naive@64": null,
+          "pass@1": 0.08928571428571429,
+          "pass@64": 0.39285714285714285
+        },
+        "B_48k_outcome": {
+          "naive@16": 0.16071428571428573,
+          "weighted@16": 0.14285714285714285,
+          "naive@64": 0.19642857142857142,
+          "weighted@64": 0.14285714285714285,
+          "mean naive@64": 0.16071428571428573,
+          "KO naive@64": null,
+          "pass@1": 0.08928571428571429,
+          "pass@64": 0.39285714285714285
+        },
+        "B_48k": {
+          "naive@16": 0.16071428571428573,
+          "weighted@16": 0.14285714285714285,
+          "naive@64": 0.17857142857142858,
+          "weighted@64": 0.14285714285714285,
+          "mean naive@64": 0.14285714285714285,
+          "KO naive@64": null,
+          "pass@1": 0.08928571428571429,
+          "pass@64": 0.39285714285714285
+        },
+        "B_12k_soft": {
+          "naive@16": 0.14285714285714285,
+          "weighted@16": 0.14285714285714285,
+          "naive@64": 0.17857142857142858,
+          "weighted@64": 0.14285714285714285,
+          "mean naive@64": 0.17857142857142858,
+          "KO naive@64": null,
+          "pass@1": 0.08928571428571429,
+          "pass@64": 0.39285714285714285
+        },
+        "B_12k_outcome": {
+          "naive@16": 0.16071428571428573,
+          "weighted@16": 0.14285714285714285,
+          "naive@64": 0.16071428571428573,
+          "weighted@64": 0.14285714285714285,
+          "mean naive@64": 0.14285714285714285,
+          "KO naive@64": null,
+          "pass@1": 0.08928571428571429,
+          "pass@64": 0.39285714285714285
+        },
+        "A_12k": {
+          "naive@16": 0.16071428571428573,
+          "weighted@16": 0.16071428571428573,
+          "naive@64": 0.17857142857142858,
+          "weighted@64": 0.14285714285714285,
+          "mean naive@64": 0.16071428571428573,
+          "KO naive@64": null,
+          "pass@1": 0.08928571428571429,
+          "pass@64": 0.39285714285714285
+        }
+      },
+      "qwen3-8b": {
+        "prm7b": {
+          "naive@16": 0.21428571428571427,
+          "weighted@16": 0.16071428571428573,
+          "naive@64": 0.17857142857142858,
+          "weighted@64": 0.17857142857142858,
+          "mean naive@64": 0.19642857142857142,
+          "KO naive@64": null,
+          "pass@1": 0.125,
+          "pass@64": 0.4107142857142857
+        },
+        "B_48k_soft": {
+          "naive@16": 0.16071428571428573,
+          "weighted@16": 0.17857142857142858,
+          "naive@64": 0.21428571428571427,
+          "weighted@64": 0.17857142857142858,
+          "mean naive@64": 0.19642857142857142,
+          "KO naive@64": null,
+          "pass@1": 0.125,
+          "pass@64": 0.4107142857142857
+        },
+        "B_48k_outcome": {
+          "naive@16": 0.17857142857142858,
+          "weighted@16": 0.19642857142857142,
+          "naive@64": 0.25,
+          "weighted@64": 0.21428571428571427,
+          "mean naive@64": 0.17857142857142858,
+          "KO naive@64": null,
+          "pass@1": 0.125,
+          "pass@64": 0.4107142857142857
+        },
+        "B_48k": {
+          "naive@16": 0.16071428571428573,
+          "weighted@16": 0.17857142857142858,
+          "naive@64": 0.19642857142857142,
+          "weighted@64": 0.19642857142857142,
+          "mean naive@64": 0.16071428571428573,
+          "KO naive@64": null,
+          "pass@1": 0.125,
+          "pass@64": 0.4107142857142857
+        },
+        "B_12k_soft": {
+          "naive@16": 0.19642857142857142,
+          "weighted@16": 0.16071428571428573,
+          "naive@64": 0.23214285714285715,
+          "weighted@64": 0.17857142857142858,
+          "mean naive@64": 0.21428571428571427,
+          "KO naive@64": null,
+          "pass@1": 0.125,
+          "pass@64": 0.4107142857142857
+        },
+        "B_12k_outcome": {
+          "naive@16": 0.21428571428571427,
+          "weighted@16": 0.16071428571428573,
+          "naive@64": 0.25,
+          "weighted@64": 0.19642857142857142,
+          "mean naive@64": 0.16071428571428573,
+          "KO naive@64": null,
+          "pass@1": 0.125,
+          "pass@64": 0.4107142857142857
+        },
+        "A_12k": {
+          "naive@16": 0.17857142857142858,
+          "weighted@16": 0.17857142857142858,
+          "naive@64": 0.19642857142857142,
+          "weighted@64": 0.17857142857142858,
+          "mean naive@64": 0.17857142857142858,
+          "KO naive@64": null,
+          "pass@1": 0.125,
+          "pass@64": 0.4107142857142857
+        }
       }
     },
     "processbench": {
@@ -2861,5 +3005,231 @@
       },
       "prm7b_published_f1": 73.5
     }
+  },
+  "big_student": {
+    "tables": {
+      "exaone-1.2b": {
+        "현행 7B (existing)": {
+          "naive@16": 0.67,
+          "weighted@16": 0.706,
+          "naive@64": 0.664,
+          "weighted@64": 0.718,
+          "mean naive@64": null,
+          "epoch": null
+        },
+        "1.2B B_24k_soft": {
+          "naive@16": 0.7,
+          "weighted@16": 0.726,
+          "naive@64": 0.714,
+          "weighted@64": 0.76,
+          "mean naive@64": 0.726,
+          "epoch": 3
+        },
+        "1.2B B_48k_soft": {
+          "naive@16": 0.722,
+          "weighted@16": 0.738,
+          "naive@64": 0.744,
+          "weighted@64": 0.766,
+          "mean naive@64": 0.74,
+          "epoch": 3
+        },
+        "prm7b_B_24k_soft ep1": {
+          "naive@16": 0.738,
+          "weighted@16": 0.764,
+          "naive@64": 0.742,
+          "weighted@64": 0.784,
+          "mean naive@64": 0.768,
+          "epoch": 1
+        },
+        "prm7b_B_24k_soft ep2": {
+          "naive@16": 0.732,
+          "weighted@16": 0.754,
+          "naive@64": 0.754,
+          "weighted@64": 0.78,
+          "mean naive@64": 0.782,
+          "epoch": 2
+        },
+        "prm7b_B_24k_soft ep3 (사전 선언)": {
+          "naive@16": 0.728,
+          "weighted@16": 0.738,
+          "naive@64": 0.748,
+          "weighted@64": 0.774,
+          "mean naive@64": 0.772,
+          "epoch": 3
+        },
+        "qwen3-8b_B_24k_soft": {
+          "naive@16": 0.772,
+          "weighted@16": 0.754,
+          "naive@64": 0.796,
+          "weighted@64": 0.774,
+          "mean naive@64": 0.774,
+          "epoch": 3
+        }
+      },
+      "qwen-3b": {
+        "현행 7B (existing)": {
+          "naive@16": 0.482,
+          "weighted@16": 0.538,
+          "naive@64": 0.466,
+          "weighted@64": 0.57,
+          "mean naive@64": null,
+          "epoch": null
+        },
+        "1.2B B_24k_soft": {
+          "naive@16": 0.586,
+          "weighted@16": 0.578,
+          "naive@64": 0.602,
+          "weighted@64": 0.616,
+          "mean naive@64": 0.594,
+          "epoch": 3
+        },
+        "1.2B B_48k_soft": {
+          "naive@16": 0.582,
+          "weighted@16": 0.588,
+          "naive@64": 0.612,
+          "weighted@64": 0.626,
+          "mean naive@64": 0.604,
+          "epoch": 3
+        },
+        "prm7b_B_24k_soft ep3 (사전 선언)": {
+          "naive@16": 0.618,
+          "weighted@16": 0.62,
+          "naive@64": 0.644,
+          "weighted@64": 0.64,
+          "mean naive@64": 0.648,
+          "epoch": 3
+        },
+        "qwen3-8b_B_24k_soft": {
+          "naive@16": 0.622,
+          "weighted@16": 0.622,
+          "naive@64": 0.672,
+          "weighted@64": 0.64,
+          "mean naive@64": 0.634,
+          "epoch": 3
+        }
+      }
+    },
+    "deltas": [
+      {
+        "comparison": "현행 7B (existing) - 1.2B B_24k_soft",
+        "metric": "naive@16",
+        "result": {
+          "diff": -0.03,
+          "lo": -0.068,
+          "hi": 0.002,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "현행 7B (existing) - 1.2B B_24k_soft",
+        "metric": "naive@64",
+        "result": {
+          "diff": -0.05,
+          "lo": -0.086,
+          "hi": -0.012,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "1.2B B_48k_soft - 1.2B B_24k_soft",
+        "metric": "naive@16",
+        "result": {
+          "diff": 0.022,
+          "lo": 0.002,
+          "hi": 0.042,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "1.2B B_48k_soft - 1.2B B_24k_soft",
+        "metric": "naive@64",
+        "result": {
+          "diff": 0.03,
+          "lo": 0.008,
+          "hi": 0.054,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "prm7b_B_24k_soft ep1 - 1.2B B_24k_soft",
+        "metric": "naive@16",
+        "result": {
+          "diff": 0.038,
+          "lo": 0.006,
+          "hi": 0.068,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "prm7b_B_24k_soft ep1 - 1.2B B_24k_soft",
+        "metric": "naive@64",
+        "result": {
+          "diff": 0.028,
+          "lo": -0.006049999999999997,
+          "hi": 0.062,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "prm7b_B_24k_soft ep2 - 1.2B B_24k_soft",
+        "metric": "naive@16",
+        "result": {
+          "diff": 0.032,
+          "lo": 0.0,
+          "hi": 0.064,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "prm7b_B_24k_soft ep2 - 1.2B B_24k_soft",
+        "metric": "naive@64",
+        "result": {
+          "diff": 0.04,
+          "lo": 0.008,
+          "hi": 0.074,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "prm7b_B_24k_soft ep3 (사전 선언) - 1.2B B_24k_soft",
+        "metric": "naive@16",
+        "result": {
+          "diff": 0.028,
+          "lo": -0.002049999999999997,
+          "hi": 0.06,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "prm7b_B_24k_soft ep3 (사전 선언) - 1.2B B_24k_soft",
+        "metric": "naive@64",
+        "result": {
+          "diff": 0.034,
+          "lo": 0.002,
+          "hi": 0.066,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "qwen3-8b_B_24k_soft - 1.2B B_24k_soft",
+        "metric": "naive@16",
+        "result": {
+          "diff": 0.072,
+          "lo": 0.042,
+          "hi": 0.1,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "qwen3-8b_B_24k_soft - 1.2B B_24k_soft",
+        "metric": "naive@64",
+        "result": {
+          "diff": 0.082,
+          "lo": 0.052,
+          "hi": 0.114,
+          "n_problems": 500
+        }
+      }
+    ]
   }
 }
