@@ -73,7 +73,8 @@ SOFT_Y_RUN = "B_12k_soft_y"
 # --- 분포 이동 (2026-09-21): English MATH500, Korean AIME, Korean ProcessBench
 SHIFT_SCORERS = ("prm7b", "B_48k_soft", "B_48k_outcome", "B_48k", "B_12k_soft",
                  "B_12k_outcome", "A_12k")
-PB_SCORERS = ("prm7b", "prm72b") + SHIFT_SCORERS[1:]
+PB_SCORERS = (("prm7b", "prm72b") + SHIFT_SCORERS[1:]
+              + ("prm7b_B_24k_soft", "qwen3-8b_B_24k_soft"))  # the 7B/8B students
 SHIFT_GENS = {"exaone-1.2b": PRIMARY_GEN, "qwen-3b": M500_GENS[1]}
 # AIME also ran with the stronger generators, which have no KO MATH500 counterpart (§15.8c).
 AIME_GENS = {**SHIFT_GENS, "qwen3-4b": None, "qwen3-8b": None}
