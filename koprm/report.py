@@ -13,7 +13,9 @@ no selection.json, so the epoch is chosen here: argmax over epochs of
 
 The third part, "분포 이동 (2026-09-21)", reads data/shift/{en,aime}/<scorer>_<gen>.json
 (bon `all` shape) and data/shift/pb/<scorer>_<lang>.json (koprm.shift first-error), and
-puts each scorer's KO MATH500 naive@64 beside the shifted number.
+puts each scorer's KO MATH500 naive@64 beside the shifted number. A fourth part,
+"큰 학생 (2026-09-22)", compares the 7B/8B students (data/eval/math500_7b, data/eval/dev7b)
+with the 1.2B ones trained on the same data.
 
     python -m koprm.report results [--data-dir data] [--out-dir data/reports]
     python -m koprm.report teacher-ref --dataset ENSEONG/ko-ko-math-500-test-EXAONE-4.0-1.2B-bon \\
@@ -73,6 +75,12 @@ SHIFT_SCORERS = ("prm7b", "B_48k_soft", "B_48k_outcome", "B_48k", "B_12k_soft",
                  "B_12k_outcome", "A_12k")
 PB_SCORERS = ("prm7b", "prm72b") + SHIFT_SCORERS[1:]
 SHIFT_GENS = {"exaone-1.2b": PRIMARY_GEN, "qwen-3b": M500_GENS[1]}
+# AIME also ran with the stronger generators, which have no KO MATH500 counterpart (§15.8c).
+AIME_GENS = {**SHIFT_GENS, "qwen3-4b": None, "qwen3-8b": None}
+# 큰 학생 (§12.2): the 7B PRM init and the Qwen3-8B backbone, both trained on B_24k soft.
+BIG_STUDENT_RUNS = ("prm7b_B_24k_soft", "qwen3-8b_B_24k_soft")
+PRM7B_DECLARED_EPOCH = 3  # dev is contaminated for the PRM init, so the epoch is pre-declared
+BIG_STUDENT_REF = "1.2B B_24k_soft"
 PB_LANGS = ("ko", "en")
 PB_SPLITS = ("gsm8k", "math", "olympiadbench", "omnimath")
 SHIFT_COLS = (("naive", 16), ("weighted", 16), ("naive", 64), ("weighted", 64))
@@ -515,17 +523,18 @@ def ko_naive64(data: Path, scorer: str, gen: str, selection: dict | None) -> flo
 
 
 def collect_bon_shift(data: Path, subdir: str, selection: dict | None,
-                      with_pass: bool = False) -> dict:
+                      with_pass: bool = False, gens: dict | None = None) -> dict:
     """(k)/(l) one table per generator: every scorer on the shifted benchmark."""
     out: dict[str, dict] = {}
-    for gen, gen_full in SHIFT_GENS.items():
+    for gen, gen_full in (gens or SHIFT_GENS).items():
         rows: dict[str, dict] = {}
         for scorer in SHIFT_SCORERS:
             raw = load_json(data / "shift" / subdir / f"{scorer}_{gen}.json")
             last, mean = flat_result(raw, "last"), flat_result(raw, "mean")
             cell = {f"{m}@{n}": metric(last, m, n) for m, n in SHIFT_COLS}
             cell["mean naive@64"] = metric(mean, "naive", 64)
-            cell["KO naive@64"] = ko_naive64(data, scorer, gen_full, selection)
+            cell["KO naive@64"] = (ko_naive64(data, scorer, gen_full, selection)
+                                   if gen_full else None)
             if with_pass:
                 cell["pass@1"] = metric(last, "pass", 1)
                 cell["pass@64"] = metric(last, "pass", 64)
@@ -571,12 +580,71 @@ def collect_processbench(data: Path) -> dict:
             "prm7b_published_f1": PRM7B_PUBLISHED_F1}
 
 
+def epochs_available(dirpath: str | Path, run: str, gen: str) -> list[int]:
+    eps = [_epoch_of(p.name) for p in Path(dirpath).glob(f"{run}_ep*_{gen}.json")]
+    return sorted(e for e in eps if e is not None)
+
+
+BIG_STUDENT_COLS = (("naive", 16), ("weighted", 16), ("naive", 64), ("weighted", 64))
+
+
+def _student_cells(raw: dict | None, epoch: int | None) -> dict:
+    last, mean = flat_result(raw, "last"), flat_result(raw, "mean")
+    cell = {f"{m}@{n}": metric(last, m, n) for m, n in BIG_STUDENT_COLS}
+    cell["mean naive@64"] = metric(mean, "naive", 64)
+    cell["epoch"] = epoch
+    return cell
+
+
+def big_student_sources(data: Path, gen_full: str) -> dict[str, tuple[dict | None, int | None]]:
+    """label -> (raw result json, epoch) for one generator, in table order."""
+    m500, big = data / "eval/math500", data / "eval/math500_big"
+    m7b, dev7b = data / "eval/math500_7b", data / "eval/dev7b"
+    out: dict[str, tuple[dict | None, int | None]] = {
+        "현행 7B (existing)": (load_json(m500 / f"existing_{gen_full}_last.json"), None),
+    }
+    for size in ("24k", "48k"):
+        ep, _ = dev_epoch(data / "eval/dev_big", f"B_{size}_soft")
+        out[f"1.2B B_{size}_soft"] = (run_file(big, f"B_{size}_soft", gen_full, ep), ep)
+    for run in BIG_STUDENT_RUNS:
+        if run.startswith("prm7b"):
+            # dev is contaminated for the PRM init (MATH train is in its training data),
+            # so every epoch is shown and epoch 3 is marked as the pre-declared choice.
+            for ep in epochs_available(m7b, run, gen_full) or [PRM7B_DECLARED_EPOCH]:
+                label = f"{run} ep{ep}" + (" (사전 선언)" if ep == PRM7B_DECLARED_EPOCH else "")
+                out[label] = (run_file(m7b, run, gen_full, ep), ep)
+        else:
+            ep, _ = dev_epoch(dev7b, run)
+            out[run] = (run_file(m7b, run, gen_full, ep), ep)
+    return out
+
+
+def collect_big_student(data: Path) -> tuple[dict, list[dict]]:
+    """(n) the 7B/8B students beside the 1.2B ones trained on the same B_24k soft data."""
+    tables = {gen: {label: _student_cells(raw, ep)
+                    for label, (raw, ep) in big_student_sources(data, gen_full).items()}
+              for gen, gen_full in SHIFT_GENS.items()}
+    primary = {label: flat_result(raw, "last") for label, (raw, _)
+               in big_student_sources(data, SHIFT_GENS["exaone-1.2b"]).items()}
+    ref = primary.get(BIG_STUDENT_REF)
+    deltas = [{"comparison": f"{label} - {BIG_STUDENT_REF}", "metric": key,
+               "result": paired_diff(res, ref, key)}
+              for label, res in primary.items() if label != BIG_STUDENT_REF
+              for key in ("naive@16", "naive@64")]
+    return tables, deltas
+
+
 def collect_shift(data: Path, selection: dict | None) -> dict:
     return {
         "en_math500": collect_bon_shift(data, "en", selection),
-        "aime": collect_bon_shift(data, "aime", selection, with_pass=True),
+        "aime": collect_bon_shift(data, "aime", selection, with_pass=True, gens=AIME_GENS),
         "processbench": collect_processbench(data),
     }
+
+
+def collect_big_student_part(data: Path) -> dict:
+    tables, deltas = collect_big_student(data)
+    return {"tables": tables, "deltas": deltas}
 
 
 def collect_extended(data: Path, selection: dict | None) -> dict:
@@ -602,6 +670,7 @@ def collect(data: Path) -> dict:
         "primary_generator": PRIMARY_GEN,
         "extended": collect_extended(data, selection),
         "shift": collect_shift(data, selection),
+        "big_student": collect_big_student_part(data),
     }
 
 
@@ -862,6 +931,33 @@ def render_shift_md(shift: dict) -> list[str]:
     return out
 
 
+def _big_student_md(part: dict) -> list[str]:
+    cols = [f"{m}@{n}" for m, n in BIG_STUDENT_COLS] + ["mean naive@64"]
+    out: list[str] = []
+    for gen, rows in part["tables"].items():
+        out += [f"**생성기 {gen}**", ""]
+        out.append(md_table(["scorer", "epoch", *cols],
+                            [[label, str(c["epoch"]) if c["epoch"] is not None else "-",
+                              *[fmt(c.get(k)) for k in cols]]
+                             for label, c in rows.items()]))
+        out.append("")
+    out += [f"{BIG_STUDENT_REF} 대비 차이(EXAONE, 문제 단위 대응 부트스트랩 95% CI):", ""]
+    out.append(md_table(["비교", "지표", "차이 [CI]"],
+                        [[d["comparison"], d["metric"], fmt_diff(d["result"])]
+                         for d in part["deltas"]]))
+    return out
+
+
+def render_big_student_md(part: dict) -> list[str]:
+    return ["## 큰 학생 (2026-09-22)", "",
+            ("7B/8B 학생은 GPU 4장 FSDP로 학습했다(마이크로 배치 4, 그래디언트 체크포인팅, "
+             "스텝당 39~43초). EXAONE-3.5-7.8B도 시도했으나 원격 코드가 transformers 5.17과 "
+             "맞지 않아 순전파가 되지 않는다. PRM 초기화 학생은 dev가 오염되어 있어"
+             "(MATH train이 그 PRM의 학습 데이터에 들어 있다) 모든 에폭을 보이고, 사전에 "
+             "선언한 3에폭을 표시했다."),
+            "", "### n. 7B/8B 학생 (B_24k 소프트)", ""] + _big_student_md(part)
+
+
 def render_md(res: dict) -> str:
     out = ["# 결과 (Plan §7 보고 항목)", "",
            f"주 평가 생성기: {res['primary_generator']}. 값이 없는 칸은 {NA}다.", "",
@@ -881,6 +977,8 @@ def render_md(res: dict) -> str:
         out += render_extended_md(res["extended"])
     if res.get("shift"):
         out += render_shift_md(res["shift"])
+    if res.get("big_student"):
+        out += render_big_student_md(res["big_student"])
     return "\n".join(out)
 
 

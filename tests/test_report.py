@@ -441,3 +441,78 @@ def test_shift_section_is_rendered_and_degrades(tmp_path):
 
     empty = render_md(collect(tmp_path / "nothing"))
     assert "## 분포 이동 (2026-09-21)" in empty and NA in empty
+
+
+# ------------------------------------------------------------- 큰 학생 (2026-09-22)
+
+
+def _big_student_tree(tmp_path):
+    data = _shift_tree(tmp_path)
+    gen = "EXAONE-4.0-1.2B"
+    # the 1.2B reference at its dev-selected epoch
+    _write_json(data / "eval/dev_big/B_24k_soft_ep3_exaone-1.2b.json", _bon(0.65, 0.70))
+    _write_json(data / "eval/math500_big" / f"B_24k_soft_ep3_{gen}.json",
+                _all_shape(0.70, per_naive=(1, 1, 0, 0)))
+    # the PRM-init student: three epochs on MATH500, no dev file (contaminated)
+    for ep, v in ((1, 0.74), (2, 0.75), (3, 0.748)):
+        _write_json(data / "eval/math500_7b" / f"prm7b_B_24k_soft_ep{ep}_{gen}.json",
+                    _all_shape(v, per_naive=(1, 1, 1, 0)))
+    # the Qwen3-8B student: dev picks the epoch as usual
+    _write_json(data / "eval/dev7b/qwen3-8b_B_24k_soft_ep2_exaone-1.2b.json", _bon(0.66, 0.71))
+    _write_json(data / "eval/math500_7b" / f"qwen3-8b_B_24k_soft_ep2_{gen}.json",
+                _all_shape(0.72))
+    # AIME with the stronger generators
+    for g, v in (("qwen3-4b", 0.30), ("qwen3-8b", 0.42)):
+        _write_json(data / "shift/aime" / f"B_48k_soft_{g}.json", _all_shape(v))
+    return data
+
+
+def test_collect_big_student_lists_every_prm_epoch(tmp_path):
+    from koprm.report import PRM7B_DECLARED_EPOCH, collect_big_student
+
+    data = _big_student_tree(tmp_path)
+    tables, deltas = collect_big_student(data)
+    rows = tables["exaone-1.2b"]
+    assert list(rows) == ["현행 7B (existing)", "1.2B B_24k_soft", "1.2B B_48k_soft",
+                          "prm7b_B_24k_soft ep1", "prm7b_B_24k_soft ep2",
+                          "prm7b_B_24k_soft ep3 (사전 선언)", "qwen3-8b_B_24k_soft"]
+    assert PRM7B_DECLARED_EPOCH == 3
+    assert rows["1.2B B_24k_soft"]["naive@64"] == 0.70 and rows["1.2B B_24k_soft"]["epoch"] == 3
+    assert rows["prm7b_B_24k_soft ep2"]["naive@16"] == 0.75
+    assert rows["prm7b_B_24k_soft ep2"]["mean naive@64"] == pytest.approx(0.72)
+    assert rows["qwen3-8b_B_24k_soft"]["epoch"] == 2          # from the dev7b glob
+    assert rows["현행 7B (existing)"]["epoch"] is None
+    assert rows["1.2B B_48k_soft"]["naive@16"] == 0.744        # from math500_big
+    # the other generator has no 7B files in this tree
+    assert tables["qwen-3b"]["prm7b_B_24k_soft ep3 (사전 선언)"]["naive@16"] is None
+
+    d = next(x for x in deltas if x["comparison"] == "prm7b_B_24k_soft ep1 - 1.2B B_24k_soft"
+             and x["metric"] == "naive@16")
+    assert d["result"]["n_problems"] == 4 and d["result"]["diff"] == 0.25
+    assert all(x["comparison"] != "1.2B B_24k_soft - 1.2B B_24k_soft" for x in deltas)
+
+
+def test_aime_covers_the_stronger_generators(tmp_path):
+    from koprm.report import AIME_GENS, collect_shift, load_json
+
+    data = _big_student_tree(tmp_path)
+    aime = collect_shift(data, load_json(data / "eval/selection.json"))["aime"]
+    assert list(aime) == list(AIME_GENS) == ["exaone-1.2b", "qwen-3b", "qwen3-4b", "qwen3-8b"]
+    assert aime["qwen3-8b"]["B_48k_soft"]["naive@64"] == 0.42
+    assert aime["qwen3-8b"]["B_48k_soft"]["pass@64"] == 0.9
+    # the stronger generators have no KO MATH500 counterpart
+    assert aime["qwen3-4b"]["B_48k_soft"]["KO naive@64"] is None
+    assert aime["exaone-1.2b"]["B_48k_soft"]["KO naive@64"] == 0.744
+
+
+def test_big_student_section_is_rendered_and_degrades(tmp_path):
+    data = _big_student_tree(tmp_path)
+    md = render_md(collect(data))
+    assert "## 큰 학생 (2026-09-22)" in md and "### n. 7B/8B 학생" in md
+    assert "prm7b_B_24k_soft ep3 (사전 선언)" in md
+    assert "EXAONE-3.5-7.8B" in md and "FSDP" in md
+    assert "1.2B B_24k_soft 대비 차이" in md
+    assert "**생성기 qwen3-8b**" in md                  # (o): the AIME table grew
+
+    empty = render_md(collect(tmp_path / "nothing"))
+    assert "## 큰 학생 (2026-09-22)" in empty and NA in empty
