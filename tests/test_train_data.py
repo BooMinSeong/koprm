@@ -378,3 +378,18 @@ def test_copy_remote_code_follows_auto_map(tmp_path):
             self.config = type("C", (), {})()
 
     assert copy_remote_code(Clean(), dest, str(src)) == []
+
+
+def test_hsdp_mesh_shape():
+    from koprm.train.train import hsdp_mesh_shape
+
+    assert hsdp_mesh_shape(4, 1) is None and hsdp_mesh_shape(1, 1) is None   # pure FSDP
+    assert hsdp_mesh_shape(8, 2) == (2, 4)      # two 4-GPU shard groups
+    assert hsdp_mesh_shape(8, 4) == (4, 2)
+    assert hsdp_mesh_shape(8, 8) == (8, 1)      # full replication, no sharding
+    for world, n in ((8, 3), (8, 5), (6, 4)):
+        with pytest.raises(SystemExit, match="does not divide"):
+            hsdp_mesh_shape(world, n)
+    for world, n in ((4, 8), (4, 0), (4, -1)):
+        with pytest.raises(SystemExit, match="must be in"):
+            hsdp_mesh_shape(world, n)

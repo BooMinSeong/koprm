@@ -14,7 +14,9 @@ Smoke test (CPU, no GPU needed):
 
 A 7-8B student needs several GPUs: `--fsdp` shards parameters, gradients and optimizer
 state with FSDP2 (`fully_shard` per decoder layer plus the root), bf16 compute over fp32
-master shards, fp32 gradient reduction, and the 2-class head kept in float32. The data is
+master shards, fp32 gradient reduction, and the 2-class head kept in float32.
+`--hsdp-replicas N` switches to HSDP: N replica groups of world//N ranks, so the all-gather
+stays inside a group and only the gradients are all-reduced across groups. The data is
 split across ranks (seeded shuffle, then rank::world_size) and `--micro-batch` is per rank,
 so the effective batch stays 64 solutions globally.
 
@@ -69,6 +71,30 @@ def grad_accum_for(micro_batch: int, world_size: int = 1,
             f"effective batch {effective}; pick a micro-batch from "
             f"{[b for b in range(1, effective + 1) if effective % (b * world_size) == 0]}")
     return max(1, effective // per_step)
+
+
+def hsdp_mesh_shape(world_size: int, replicas: int) -> tuple[int, int] | None:
+    """(replicate, shard) for HSDP; None for plain FSDP (replicas == 1)."""
+    if replicas < 1 or replicas > world_size:
+        raise SystemExit(f"--hsdp-replicas {replicas} must be in [1, {world_size}]")
+    if world_size % replicas:
+        raise SystemExit(f"--hsdp-replicas {replicas} does not divide {world_size} ranks")
+    return None if replicas == 1 else (replicas, world_size // replicas)
+
+
+def build_mesh(world_size: int, replicas: int):
+    """Shard inside each group of world//N ranks, replicate across the N groups.
+
+    Plain FSDP over 8 PCIe-linked GPUs was slower here (60 s/step) than over 4 (39 s/step)
+    because the per-layer all-gather is bandwidth-bound; two 4-GPU shard groups keep the
+    all-gather inside a group and only all-reduce gradients across groups.
+    """
+    shape = hsdp_mesh_shape(world_size, replicas)
+    if shape is None:
+        return None
+    from torch.distributed.device_mesh import init_device_mesh
+
+    return init_device_mesh("cuda", shape, mesh_dim_names=("replicate", "shard"))
 
 
 def decoder_layers(backbone) -> list:
@@ -162,10 +188,13 @@ def train(args: argparse.Namespace) -> dict:
     if args.grad_ckpt:
         model.gradient_checkpointing_enable()  # before sharding
     if fsdp:
-        model = shard_model(model)
+        mesh = build_mesh(world, args.hsdp_replicas)
+        model = shard_model(model, mesh)
     if is_main:
+        mesh_note = (f" hsdp={args.hsdp_replicas}x{world // args.hsdp_replicas}"
+                     if fsdp and args.hsdp_replicas > 1 else "")
         print(f"[train] backbone={src} sep={model.sep_token!r} id={model.sep_id} "
-              f"dtype={dtype} device={device} fsdp={fsdp} world={world}")
+              f"dtype={dtype} device={device} fsdp={fsdp} world={world}{mesh_note}")
 
     soft_mode = "soft_y" if args.soft_y else ("soft" if args.soft else None)
     ds, stats = build_dataset(args.train, model.tokenizer, model.sep_token,
@@ -208,7 +237,7 @@ def train(args: argparse.Namespace) -> dict:
     if is_main:
         (out_dir / "run_config.json").write_text(
             json.dumps({**vars(args), "soft_mode": soft_mode, "accum": accum,
-                        "world_size": world,
+                        "world_size": world, "hsdp_replicas": args.hsdp_replicas,
                         "effective_batch": accum * args.micro_batch * world,
                         "total_opt_steps": total_opt_steps, "n_examples": len(ds),
                         "data_stats": stats.as_dict()}, ensure_ascii=False, indent=2),
@@ -289,6 +318,8 @@ def main() -> None:
                     help="start from a Qwen2.5-Math-PRM checkpoint (backbone + 2-class head)")
     ap.add_argument("--fsdp", action="store_true",
                     help="shard with FSDP2; run under torchrun --nproc_per_node=N")
+    ap.add_argument("--hsdp-replicas", type=int, default=1,
+                    help="HSDP: N replica groups of world//N ranks (1 = pure FSDP)")
     ap.add_argument("--sep-token", default=None)
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--micro-batch", type=int, default=4)
