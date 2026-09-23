@@ -30,6 +30,8 @@ uv sync --extra dev          # vllm 0.29, transformers 5.17, torch 2.13, math-ve
 
 ## 결과
 
+최종 보고서(동기·방법·결과·분석·결론)는 [REPORT.md](REPORT.md)에 있다.
+
 §5 전 단계를 2026-09-20에 실행했다. 모든 표는 [data/reports/results.md](data/reports/results.md)에, 판정과 요약은 [Plan.md](Plan.md) §15에 있다.
 
 2026-09-21에는 집계 방식(last/min/prod/mean), B 풀 4.8만까지의 학습 곡선, 3B 백본, 소프트+y를 추가로 실행했다(results.md의 "확장 실험", Plan §15.7). 4.8만에서 교사 소프트가 naive@64 0.744, 결과 항만이 weighted@64 0.780으로 현행 영어 PRM(0.664 / 0.718)을 넘는다.
