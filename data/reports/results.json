@@ -2381,6 +2381,30 @@
           "weighted@64": 0.804,
           "mean naive@64": 0.756,
           "KO naive@64": 0.566
+        },
+        "prm7b_B_24k_soft": {
+          "naive@16": null,
+          "weighted@16": null,
+          "naive@64": null,
+          "weighted@64": null,
+          "mean naive@64": null,
+          "KO naive@64": 0.742
+        },
+        "qwen3-8b_B_24k_soft": {
+          "naive@16": 0.838,
+          "weighted@16": 0.842,
+          "naive@64": 0.842,
+          "weighted@64": 0.838,
+          "mean naive@64": 0.846,
+          "KO naive@64": 0.796
+        },
+        "qwen3-8b_B_48k_soft": {
+          "naive@16": 0.832,
+          "weighted@16": 0.832,
+          "naive@64": 0.842,
+          "weighted@64": 0.832,
+          "mean naive@64": 0.848,
+          "KO naive@64": 0.788
         }
       },
       "qwen-3b": {
@@ -2439,6 +2463,30 @@
           "weighted@64": 0.786,
           "mean naive@64": 0.69,
           "KO naive@64": 0.484
+        },
+        "prm7b_B_24k_soft": {
+          "naive@16": null,
+          "weighted@16": null,
+          "naive@64": null,
+          "weighted@64": null,
+          "mean naive@64": null,
+          "KO naive@64": 0.644
+        },
+        "qwen3-8b_B_24k_soft": {
+          "naive@16": 0.788,
+          "weighted@16": 0.78,
+          "naive@64": 0.79,
+          "weighted@64": 0.796,
+          "mean naive@64": 0.798,
+          "KO naive@64": 0.672
+        },
+        "qwen3-8b_B_48k_soft": {
+          "naive@16": 0.782,
+          "weighted@16": 0.774,
+          "naive@64": 0.806,
+          "weighted@64": 0.804,
+          "mean naive@64": 0.792,
+          "KO naive@64": 0.696
         }
       }
     },
@@ -3065,6 +3113,38 @@
               "omnimath": 0.5950413223140496
             }
           }
+        },
+        "qwen3-8b_B_48k_soft": {
+          "ko": {
+            "err_acc": 0.5826271186440678,
+            "corr_acc": 0.7370242214532872,
+            "f1": 0.6507935626156178,
+            "within1": 0.7372881355932204,
+            "n_error_rows": 472,
+            "n_correct_rows": 289,
+            "n_scored": 761,
+            "split_f1": {
+              "gsm8k": 0.6514541387024608,
+              "math": 0.6840617174246709,
+              "olympiadbench": 0.6938110749185668,
+              "omnimath": 0.5319969159599075
+            }
+          },
+          "en": {
+            "err_acc": 0.6694915254237288,
+            "corr_acc": 0.8373702422145328,
+            "f1": 0.7440792418315917,
+            "within1": 0.7944915254237288,
+            "n_error_rows": 472,
+            "n_correct_rows": 289,
+            "n_scored": 761,
+            "split_f1": {
+              "gsm8k": 0.7610078900483583,
+              "math": 0.7625461655442103,
+              "olympiadbench": 0.7706122448979591,
+              "omnimath": 0.6198675496688743
+            }
+          }
         }
       },
       "prm7b_published_f1": 73.5
@@ -3128,6 +3208,14 @@
           "weighted@64": 0.774,
           "mean naive@64": 0.774,
           "epoch": 3
+        },
+        "qwen3-8b_B_48k_soft": {
+          "naive@16": 0.766,
+          "weighted@16": 0.75,
+          "naive@64": 0.788,
+          "weighted@64": 0.78,
+          "mean naive@64": 0.774,
+          "epoch": 3
         }
       },
       "qwen-3b": {
@@ -3169,6 +3257,14 @@
           "naive@64": 0.672,
           "weighted@64": 0.64,
           "mean naive@64": 0.634,
+          "epoch": 3
+        },
+        "qwen3-8b_B_48k_soft": {
+          "naive@16": 0.64,
+          "weighted@16": 0.618,
+          "naive@64": 0.696,
+          "weighted@64": 0.654,
+          "mean naive@64": 0.646,
           "epoch": 3
         }
       }
@@ -3291,6 +3387,26 @@
           "diff": 0.082,
           "lo": 0.052,
           "hi": 0.114,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "qwen3-8b_B_48k_soft - 1.2B B_24k_soft",
+        "metric": "naive@16",
+        "result": {
+          "diff": 0.066,
+          "lo": 0.037950000000000005,
+          "hi": 0.094,
+          "n_problems": 500
+        }
+      },
+      {
+        "comparison": "qwen3-8b_B_48k_soft - 1.2B B_24k_soft",
+        "metric": "naive@64",
+        "result": {
+          "diff": 0.074,
+          "lo": 0.042,
+          "hi": 0.10604999999999995,
           "n_problems": 500
         }
       }

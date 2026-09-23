@@ -475,12 +475,14 @@ def test_collect_big_student_lists_every_prm_epoch(tmp_path):
     rows = tables["exaone-1.2b"]
     assert list(rows) == ["현행 7B (existing)", "1.2B B_24k_soft", "1.2B B_48k_soft",
                           "prm7b_B_24k_soft ep1", "prm7b_B_24k_soft ep2",
-                          "prm7b_B_24k_soft ep3 (사전 선언)", "qwen3-8b_B_24k_soft"]
+                          "prm7b_B_24k_soft ep3 (사전 선언)", "qwen3-8b_B_24k_soft",
+                          "qwen3-8b_B_48k_soft"]
     assert PRM7B_DECLARED_EPOCH == 3
     assert rows["1.2B B_24k_soft"]["naive@64"] == 0.70 and rows["1.2B B_24k_soft"]["epoch"] == 3
     assert rows["prm7b_B_24k_soft ep2"]["naive@16"] == 0.75
     assert rows["prm7b_B_24k_soft ep2"]["mean naive@64"] == pytest.approx(0.72)
     assert rows["qwen3-8b_B_24k_soft"]["epoch"] == 2          # from the dev7b glob
+    assert rows["qwen3-8b_B_48k_soft"]["naive@64"] is None    # not in this tiny tree
     assert rows["현행 7B (existing)"]["epoch"] is None
     assert rows["1.2B B_48k_soft"]["naive@16"] == 0.744        # from math500_big
     # the other generator has no 7B files in this tree

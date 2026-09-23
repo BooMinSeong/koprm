@@ -73,13 +73,15 @@ SOFT_Y_RUN = "B_12k_soft_y"
 # --- 분포 이동 (2026-09-21): English MATH500, Korean AIME, Korean ProcessBench
 SHIFT_SCORERS = ("prm7b", "B_48k_soft", "B_48k_outcome", "B_48k", "B_12k_soft",
                  "B_12k_outcome", "A_12k")
-PB_SCORERS = (("prm7b", "prm72b") + SHIFT_SCORERS[1:]
-              + ("prm7b_B_24k_soft", "qwen3-8b_B_24k_soft"))  # the 7B/8B students
+# The 7B/8B students (§15.9); they appear in the shift tables next to the 1.2B ones.
+BIG_STUDENT_SCORERS = ("prm7b_B_24k_soft", "qwen3-8b_B_24k_soft", "qwen3-8b_B_48k_soft")
+EN_SCORERS = SHIFT_SCORERS + BIG_STUDENT_SCORERS
+PB_SCORERS = ("prm7b", "prm72b") + SHIFT_SCORERS[1:] + BIG_STUDENT_SCORERS
 SHIFT_GENS = {"exaone-1.2b": PRIMARY_GEN, "qwen-3b": M500_GENS[1]}
 # AIME also ran with the stronger generators, which have no KO MATH500 counterpart (§15.8c).
 AIME_GENS = {**SHIFT_GENS, "qwen3-4b": None, "qwen3-8b": None}
-# 큰 학생 (§12.2): the 7B PRM init and the Qwen3-8B backbone, both trained on B_24k soft.
-BIG_STUDENT_RUNS = ("prm7b_B_24k_soft", "qwen3-8b_B_24k_soft")
+# 큰 학생 (§12.2): the 7B PRM init and the Qwen3-8B backbone (B_24k soft, then B_48k soft).
+BIG_STUDENT_RUNS = BIG_STUDENT_SCORERS
 PRM7B_DECLARED_EPOCH = 3  # dev is contaminated for the PRM init, so the epoch is pre-declared
 BIG_STUDENT_REF = "1.2B B_24k_soft"
 PB_LANGS = ("ko", "en")
@@ -512,6 +514,12 @@ def ko_naive64(data: Path, scorer: str, gen: str, selection: dict | None) -> flo
     if scorer == "prm7b":  # the 현행 baseline: the English PRM on the Korean solutions
         return metric(flat_result(
             load_json(data / "eval/math500" / f"existing_{gen}_last.json"), "last"), "naive", 64)
+    if scorer in BIG_STUDENT_SCORERS:
+        ep, _ = dev_epoch(data / "eval/dev7b", scorer)
+        if ep is None and scorer.startswith("prm7b"):
+            ep = PRM7B_DECLARED_EPOCH  # contaminated dev: the pre-declared epoch
+        return metric(flat_result(run_file(data / "eval/math500_7b", scorer, gen, ep), "last"),
+                      "naive", 64)
     if scorer.startswith("B_48k"):
         ep, _ = dev_epoch(data / "eval/dev_big", scorer)
         return metric(flat_result(run_file(data / "eval/math500_big", scorer, gen, ep), "last"),
@@ -524,12 +532,13 @@ def ko_naive64(data: Path, scorer: str, gen: str, selection: dict | None) -> flo
 
 
 def collect_bon_shift(data: Path, subdir: str, selection: dict | None,
-                      with_pass: bool = False, gens: dict | None = None) -> dict:
+                      with_pass: bool = False, gens: dict | None = None,
+                      scorers: tuple[str, ...] | None = None) -> dict:
     """(k)/(l) one table per generator: every scorer on the shifted benchmark."""
     out: dict[str, dict] = {}
     for gen, gen_full in (gens or SHIFT_GENS).items():
         rows: dict[str, dict] = {}
-        for scorer in SHIFT_SCORERS:
+        for scorer in scorers or SHIFT_SCORERS:
             raw = load_json(data / "shift" / subdir / f"{scorer}_{gen}.json")
             last, mean = flat_result(raw, "last"), flat_result(raw, "mean")
             cell = {f"{m}@{n}": metric(last, m, n) for m, n in SHIFT_COLS}
@@ -637,7 +646,7 @@ def collect_big_student(data: Path) -> tuple[dict, list[dict]]:
 
 def collect_shift(data: Path, selection: dict | None) -> dict:
     return {
-        "en_math500": collect_bon_shift(data, "en", selection),
+        "en_math500": collect_bon_shift(data, "en", selection, scorers=EN_SCORERS),
         "aime": collect_bon_shift(data, "aime", selection, with_pass=True, gens=AIME_GENS),
         "processbench": collect_processbench(data),
     }
@@ -956,7 +965,7 @@ def render_big_student_md(part: dict) -> list[str]:
              "맞지 않아 순전파가 되지 않는다. PRM 초기화 학생은 dev가 오염되어 있어"
              "(MATH train이 그 PRM의 학습 데이터에 들어 있다) 모든 에폭을 보이고, 사전에 "
              "선언한 3에폭을 표시했다."),
-            "", "### n. 7B/8B 학생 (B_24k 소프트)", ""] + _big_student_md(part)
+            "", "### n. 7B/8B 학생 (B_24k·B_48k 소프트)", ""] + _big_student_md(part)
 
 
 def render_md(res: dict) -> str:
