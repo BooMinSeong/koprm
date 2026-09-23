@@ -20,7 +20,7 @@ Three questions, one module of file joins plus one evaluator:
         --ko-steps data/trans/pb_steps_ko.jsonl --out data/shift/pb_rows.jsonl
     python -m koprm.shift first-error --rows data/shift/pb_rows.jsonl \\
         --scorer data/ckpt/big_B_48k_soft/epoch3 --device cuda:0 \\
-        --out data/reports/pb_big_B_48k_soft.json
+        --out data/reports/pb_big_B_48k_soft.json [--save-probs data/shift/pb_probs/<name>.jsonl]
 """
 from __future__ import annotations
 
@@ -156,6 +156,13 @@ def student_probs(rows: list[dict], scorer, steps_field: str = "steps_ko",
     return [p if p else None for p in probs], n_skipped
 
 
+def probs_rows(rows: list[dict], probs: list[list[float] | None]) -> list[dict]:
+    """Per-step probabilities as jsonl rows, so an analysis can re-read them (§15.9f)."""
+    return [{"id": r["id"], "split": r.get("split"), "label": r.get("label"),
+             "probs": [float(x) for x in p]}
+            for r, p in zip(rows, probs) if p]
+
+
 def pb_metrics(rows: list[dict], preds: list[int]) -> dict:
     """ProcessBench triple from the audit metrics: err / corr accuracy and their F1."""
     m = first_error_metrics(rows, preds)
@@ -244,6 +251,8 @@ def main() -> None:
     p.add_argument("--problem-field", default="problem_ko")
     p.add_argument("--system-prompt", choices=["ko", "en"], default="ko")
     p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--save-probs", default=None,
+                   help="also write the per-step probabilities as jsonl (id/split/label/probs)")
     p.add_argument("--device", default="cpu")
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--max-len", type=int, default=4096)
@@ -277,6 +286,9 @@ def main() -> None:
             probs, n_skipped = student_probs(rows, scorer, args.steps_field,
                                              args.problem_field, args.batch_size)
             scorer_name = args.scorer
+        if args.save_probs:
+            n = write_jsonl(args.save_probs, probs_rows(rows, probs))
+            print(f"[shift] wrote per-step probabilities for {n} rows to {args.save_probs}")
         rep = first_error_report(rows, probs, args.threshold, n_skipped)
         rep.update({"scorer": scorer_name, "rows": args.rows, "steps_field": args.steps_field,
                     "problem_field": args.problem_field,

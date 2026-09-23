@@ -223,3 +223,18 @@ def test_chat_kwargs_reach_the_template_and_new_generators_exist():
     src = Path(__import__("koprm.gen.generate", fromlist=["x"]).__file__).read_text(
         encoding="utf-8")
     assert "--chat-kwargs" in src
+
+
+def test_probs_rows_shape_and_skips(tmp_path):
+    """--save-probs writes one row per scored solution; unscored rows are left out."""
+    from koprm.shift import probs_rows
+
+    rows = [{"id": "a", "split": "math", "label": 2, "steps_ko": ["s"]},
+            {"id": "b", "split": "omnimath", "label": -1, "steps_ko": ["s"]},
+            {"id": "c", "split": "gsm8k", "label": 0, "steps_ko": ["s"]}]
+    out = probs_rows(rows, [[0.9, 0.2], None, [0.5]])
+    assert out == [{"id": "a", "split": "math", "label": 2, "probs": [0.9, 0.2]},
+                   {"id": "c", "split": "gsm8k", "label": 0, "probs": [0.5]}]
+    assert all(isinstance(v, float) for r in out for v in r["probs"])
+    src = Path(__import__("koprm.shift", fromlist=["x"]).__file__).read_text(encoding="utf-8")
+    assert "--save-probs" in src

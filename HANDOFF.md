@@ -32,7 +32,7 @@ data/eval/agg/    원래 체크포인트의 네 집계(last/min/prod/mean)
 data/eval/dev7b/, math500_7b/      7B·8B 학생(24k·48k), shift/{en,pb}에도 같은 학생
 data/ckpt/prm7b_B_24k_soft, qwen3-8b_B_24k_soft, qwen3-8b_B_48k_soft  7B·8B 학생
 data/models/EXAONE-3.5-7.8B-Instruct-patched      가중치 심링크 + 패치 시도(실패)
-data/shift/       분포 이동: math500_en_problems.jsonl, gen_math500_en_*,
+data/shift/       분포 이동: pb_probs/(스텝별 확률, §15.9f), math500_en_problems.jsonl, gen_math500_en_*,
                   math500_en_*.bon.jsonl, aime_problems_ko.jsonl, gen_aime_ko_*,
                   aime_ko_*.bon.jsonl, pb_rows.jsonl, en/, aime/(강한 생성기 *qwen3* 포함), pb/
 data/trans/       (분포 이동분) aime_in, aime_ko, pb_in, pb_problems_ko, pb_steps_ko
@@ -93,8 +93,10 @@ koprm/eval/{scorer,bon}.py            학생 채점기, BoN 재채점 평가(nai
 koprm/prep.py                         단계 사이의 입력 jsonl 조립(problems-in/ko, teacher-in 등)
 koprm/report.py                       §7 보고 항목 조립(results.md/json), 교사 참조선, 학생 첫 오류 감사
 koprm/shift.py                        분포 이동: math500-en, bon-jsonl, processbench-rows,
-                                      first-error(학생 또는 교사, ProcessBench err/corr/F1)
+                                      first-error(학생 또는 교사, ProcessBench err/corr/F1,
+                                      `--save-probs`로 스텝별 확률 저장)
 scripts/check_teacher.py, check_student.py  1일차 점검
+scripts/pb_gap_analysis.py            omnimath 격차 분석 (§15.9f)
 ```
 
 테스트: `.venv/bin/python -m pytest tests -q` (161개 통과해야 함).
@@ -113,7 +115,7 @@ scripts/check_teacher.py, check_student.py  1일차 점검
 기본 구성은 Qwen3-8B 백본에 교사 소프트 라벨, 풀이 2.4만이다(§15.9e). 4.8만까지 늘려도 더 나아지지 않았다. 하드 커널 라벨과 1.2B 학생은 대체되었다. 임계 보정과 영어 템플릿 변형은 사용자 판단으로 제외한다(스텝 판정은 학습으로 얻어야 하고, 템플릿은 본질이 아니다).
 
 1. 9.6만 지점은 권하지 않는다. 8B에서 2.4만 → 4.8만이 이미 평평했으므로(§15.9e) GPU 40시간을 쓸 근거가 지금은 없다.
-2. 어려운 분할의 스텝 판정을 좁힌다. 8B 4.8만에서도 omnimath의 한국어 F1이 0.532로 가장 낮다.
+2. omnimath 격차의 원인은 밝혔다(§15.9f). 절반은 교사에게서 물려받은 것이고(72B 직접도 이 분할이 가장 낮다), 나머지 절반은 학습 범위를 넘는 조밀한 계산 스텝을 학생이 검산하지 못해 생기는 오탐이다(교사가 확신하는 스텝에서도 한국어 오탐률 7.4%). 오류 위치 능력 자체는 분할을 타지 않는다. 권장 실험은 올림피아드 수준의 한국어 학습 데이터(omnimath·olympiadbench류 문제 생성 + 교사 라벨)이고, 값싼 변형은 스텝 병합 증강이다. 어느 쪽이든 corr_acc 추정이 정답 42풀이에 기대므로 omnimath 전체로 다시 재는 것이 먼저다(영어 1,000행, 한국어는 번역 800행 추가). 재현: `scripts/pb_gap_analysis.py`.
 3. 첫 오류 감사를 한국어 문제 텍스트로 다시 잰다(지금 수치는 영어 문제 조건이라 학생에게 불리하다).
 4. AIME는 보류한다. Qwen3-4B·Qwen3-8B로 표본당 정답률은 올랐지만 pass@64가 0.39~0.41에 머물러(56문제 중 같은 23문제) 채점기를 가르지 못한다(§15.9c).
 
