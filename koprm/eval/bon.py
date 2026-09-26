@@ -325,10 +325,11 @@ def bootstrap_ci(per_problem_correct, iters: int = 1000, alpha: float = 0.05,
 
 def evaluate(rows: list[dict], step_scores: list[list[list[float]]], agg: str = "last",
              timeout: float = 3.0, verbose: bool = True,
-             cache_dir: str | Path | None = None) -> dict:
-    """`cache_dir=None` (the default) touches no disk; `main` passes EVAL/"cache"."""
+             cache_dir: str | Path | None = None, ns: list[int] | None = None) -> dict:
+    """`cache_dir=None` (the default) touches no disk; `main` passes EVAL/"cache".
+    `ns` overrides the n grid (e.g. to include a pool size that is not a power of two)."""
     n_max = min(len(r["completions"]) for r in rows)
-    ns = n_grid(n_max)
+    ns = n_grid(n_max) if ns is None else sorted({n for n in ns if 1 <= n <= n_max})
     per_problem: dict[str, list[int]] = {f"{m}@{n}": [] for m in METHODS for n in ns}
     for n in ns:
         per_problem[f"pass@{n}"] = []

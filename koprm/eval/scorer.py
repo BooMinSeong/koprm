@@ -14,6 +14,24 @@ from koprm.paths import SYSTEM_PROMPT_KO
 from koprm.train.model import StepPRM, encode_example
 
 
+def token_batches(lengths: list[int], order: list[int], batch_size: int,
+                  max_batch_tokens: int | None = None) -> list[list[int]]:
+    """Split `order` (sorted by ascending length; `lengths` aligned with it) into batches of at
+    most `batch_size` rows and, if given, at most `max_batch_tokens` padded tokens. A single
+    row longer than the budget still forms its own batch."""
+    batches: list[list[int]] = []
+    cur: list[int] = []
+    for i, L in zip(order, lengths):
+        if cur and (len(cur) >= batch_size
+                    or (max_batch_tokens and (len(cur) + 1) * L > max_batch_tokens)):
+            batches.append(cur)
+            cur = []
+        cur.append(i)
+    if cur:
+        batches.append(cur)
+    return batches
+
+
 class StudentScorer:
     def __init__(self, ckpt_dir: str, device: str = "cpu",
                  dtype: torch.dtype | None = None, max_len: int = 4096,
@@ -64,7 +82,9 @@ class StudentScorer:
 
     # ------------------------------------------------------------------- main
     def score(self, problems_ko: list[str], solutions_steps: list[list[str]],
-              batch_size: int = 8) -> list[list[float]]:
+              batch_size: int = 8, max_batch_tokens: int | None = None) -> list[list[float]]:
+        """`max_batch_tokens` additionally caps a batch's padded size (rows x longest row),
+        so short sequences go in large batches and long ones in small (koprm/eval/dvts.py)."""
         if len(problems_ko) != len(solutions_steps):
             raise ValueError("problems_ko and solutions_steps must have the same length")
         enc: list[tuple[list[int], list[int], int]] = [
@@ -72,8 +92,8 @@ class StudentScorer:
         ]
         order = sorted(range(len(enc)), key=lambda i: len(enc[i][0]))  # length-sorted batching
         out: list[list[float]] = [[] for _ in enc]
-        for b in range(0, len(order), batch_size):
-            idx = order[b : b + batch_size]
+        for idx in token_batches([len(enc[i][0]) for i in order], order, batch_size,
+                                 max_batch_tokens):
             items = [(enc[i][0], enc[i][1]) for i in idx]
             live = [j for j, i in enumerate(idx) if items[j][1]]
             if not live:
